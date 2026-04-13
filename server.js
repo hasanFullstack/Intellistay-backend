@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import connectDB from "./config/db.js";
+import dns from "dns";
 
 import authRoutes from "./routes/auth.routes.js";
 import hostelRoutes from "./routes/hostel.routes.js";
@@ -13,6 +14,8 @@ import recommendationRoutes from "./routes/recommendation.routes.js";
 import studentRoutes from "./routes/student.routes.js";
 import stripeRoutes from "./routes/stripe.routes.js";
 import paymentsRoutes from "./routes/payments.routes.js";
+import favoriteRoutes from "./routes/favorite.routes.js";
+import ownerStripeRoutes from "./routes/ownerStripe.routes.js";
 
 import {
   securityHeaders,
@@ -20,7 +23,8 @@ import {
   apiLimiter,
 } from "./middleware/security.middleware.js";
 import errorHandler from "./middleware/errorHandler.js";
-
+let server;
+dns.setServers(["8.8.8.8", "8.8.4.4"]);
 dotenv.config();
 connectDB();
 
@@ -57,6 +61,8 @@ app.use("/api/hostel-environment", hostelEnvironmentRoutes);
 app.use("/api/recommendations", recommendationRoutes);
 app.use("/api/students", studentRoutes);
 app.use("/api/payments", paymentsRoutes);
+app.use("/api/favorites", favoriteRoutes);
+app.use("/api/owners/stripe", ownerStripeRoutes);
 
 // Global error handler (must be last)
 app.use(errorHandler);

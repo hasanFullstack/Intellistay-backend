@@ -1,5 +1,7 @@
 import Stripe from "stripe";
 import nodemailer from "nodemailer";
+import Hostel from "../models/Hostel.js";
+import User from "../models/Users.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET);
 
@@ -80,6 +82,66 @@ export const handleStripeWebhook = async (req, res) => {
             `,
           });
           console.log("Admin email sent to", process.env.ADMIN_EMAIL);
+        }
+        // Attempt to transfer funds to owner if this booking belongs to a hostel with an owner
+        try {
+          const hostelId =
+            session.metadata?.hostelId || session.metadata?.hostel || null;
+          const amount = session.amount_total;
+          const currency = session.currency || "pkr";
+
+          if (hostelId && amount) {
+            const hostel = await Hostel.findById(hostelId).lean();
+            if (hostel && hostel.ownerId) {
+              const owner = await User.findById(hostel.ownerId)
+                .select("stripe")
+                .lean();
+              const ownerAccountId = owner?.stripe?.accountId || null;
+
+              // Retrieve PaymentIntent -> charge id to use as source_transaction for transfer
+              if (ownerAccountId && session.payment_intent) {
+                try {
+                  const pi = await stripe.paymentIntents.retrieve(
+                    session.payment_intent,
+                  );
+                  const charge =
+                    pi && pi.charges && pi.charges.data && pi.charges.data[0];
+                  if (charge && charge.id && charge.status === "succeeded") {
+                    // Only create transfer if charge was not already transferred
+                    if (!charge.transfer_data) {
+                      await stripe.transfers.create({
+                        amount: amount,
+                        currency: currency,
+                        destination: ownerAccountId,
+                        source_transaction: charge.id,
+                      });
+                      console.log(
+                        "Transferred",
+                        amount,
+                        currency,
+                        "to",
+                        ownerAccountId,
+                      );
+                    } else {
+                      console.log(
+                        "Charge already has transfer_data; skipping transfer",
+                      );
+                    }
+                  }
+                } catch (txErr) {
+                  console.error(
+                    "Owner transfer failed:",
+                    txErr.message || txErr,
+                  );
+                }
+              }
+            }
+          }
+        } catch (ownerErr) {
+          console.warn(
+            "Error while attempting owner transfer:",
+            ownerErr.message || ownerErr,
+          );
         }
 
         break;

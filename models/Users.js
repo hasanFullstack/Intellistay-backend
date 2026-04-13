@@ -73,8 +73,14 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    // Stripe keys for owners (optional)
+    stripe: {
+      publicKey: { type: String, default: "" },
+      secretKey: { type: String, default: "" },
+      accountId: { type: String, default: "" },
+    },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 export default mongoose.model("User", userSchema);

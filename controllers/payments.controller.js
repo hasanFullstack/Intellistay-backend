@@ -2,6 +2,7 @@ import Stripe from "stripe";
 import nodemailer from "nodemailer";
 import Room from "../models/Room.js";
 import Hostel from "../models/Hostel.js";
+import User from "../models/Users.js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET);
 
@@ -257,7 +258,34 @@ export const createCheckoutSession = async (req, res, next) => {
 
     let session;
     try {
-      session = await stripe.checkout.sessions.create(sessionParams);
+      // If the room belongs to an owner who added their Stripe secret key,
+      // create the Checkout Session using the owner's key so funds go to them.
+      let stripeClient = stripe;
+      try {
+        if (room && room.hostelId && room.hostelId.ownerId) {
+          const owner = await User.findById(room.hostelId.ownerId).select(
+            "stripe",
+          );
+          if (owner && owner.stripe && owner.stripe.secretKey) {
+            try {
+              stripeClient = new Stripe(owner.stripe.secretKey);
+            } catch (e) {
+              console.warn(
+                "Invalid owner Stripe secret, falling back to platform key",
+                e.message || e,
+              );
+              stripeClient = stripe;
+            }
+          }
+        }
+      } catch (lookupErr) {
+        console.warn(
+          "Owner Stripe lookup failed",
+          lookupErr.message || lookupErr,
+        );
+      }
+
+      session = await stripeClient.checkout.sessions.create(sessionParams);
     } catch (stripeErr) {
       const status = stripeErr.statusCode || 400;
       const body = {
