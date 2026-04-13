@@ -59,7 +59,3 @@ out/
 # 🔹 Optional: Uploads (if storing files locally)
 uploads/
 
-# 🔹 Optional: Firebase / service accounts
-*.json
-
-.env
