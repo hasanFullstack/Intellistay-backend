@@ -11,7 +11,7 @@ RUN npm ci
 # 2. Rebuild the source code only when needed
 FROM base AS builder
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/node_modules 
 COPY . .
 # If you have a build step (like TypeScript), uncomment the line below:
 # RUN npm run build
