@@ -1,0 +1,37 @@
+# Use a specific version of Node on Alpine for a tiny footprint
+FROM node:20-alpine AS base
+
+# 1. Install dependencies only when needed
+FROM base AS deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# 2. Rebuild the source code only when needed
+FROM base AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+# If you have a build step (like TypeScript), uncomment the line below:
+# RUN npm run build
+
+# 3. Production image, copy all the files and run next
+FROM base AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# Create a non-privileged user for security
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nodejsuser
+
+# Copy only necessary files
+COPY --from=builder /app ./
+
+USER nodejsuser
+
+EXPOSE 3000
+
+# Update this if your main entry point is different
+CMD ["node", "server.js"]
