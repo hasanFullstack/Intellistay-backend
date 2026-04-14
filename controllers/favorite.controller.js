@@ -1,5 +1,6 @@
 import Favorite from "../models/Favorite.js";
 import Hostel from "../models/Hostel.js";
+import Room from "../models/Room.js";
 
 // Add hostel to favorites
 export const addFavorite = async (req, res) => {
@@ -56,9 +57,26 @@ export const getUserFavorites = async (req, res) => {
     const userId = req.user._id;
 
     const favorites = await Favorite.find({ userId }).populate("hostelId");
-    const hostels = favorites.map((fav) => fav.hostelId);
+    const hostels = favorites.map((fav) => fav.hostelId).filter(Boolean);
 
-    res.json(hostels);
+    // Compute min room price per hostel using aggregation for efficiency
+    const hostelIds = hostels.map((h) => h._id);
+    const prices = await Room.aggregate([
+      { $match: { hostelId: { $in: hostelIds } } },
+      { $group: { _id: "$hostelId", minPrice: { $min: "$pricePerBed" } } },
+    ]);
+
+    const priceMap = {};
+    prices.forEach((p) => {
+      priceMap[String(p._id)] = p.minPrice;
+    });
+
+    const enriched = hostels.map((h) => ({
+      ...h.toObject(),
+      minRoomPrice: priceMap[String(h._id)] ?? h.pricePerBed ?? h.minPrice ?? null,
+    }));
+
+    res.json(enriched);
   } catch (error) {
     res.status(500).json({ msg: error.message });
   }
