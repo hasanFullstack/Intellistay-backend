@@ -1,0 +1,65 @@
+# 🔹 Dependencies
+node_modules/
+
+# 🔹 Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 🔹 Environment variables
+.env
+.env.*
+!.env.example
+
+# 🔹 Build output
+dist/
+build/
+
+# 🔹 Coverage reports
+coverage/
+
+# 🔹 OS files
+.DS_Store
+Thumbs.db
+
+# 🔹 IDE / Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 🔹 Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# 🔹 Temporary files
+tmp/
+temp/
+
+# 🔹 Cache
+.cache/
+.parcel-cache/
+
+# 🔹 Optional: Next.js / frameworks
+.next/
+out/
+
+# 🔹 Optional: Logs from PM2
+.pm2/
+
+# 🔹 Optional: SQLite databases (if local dev)
+*.sqlite
+*.db
+
+# 🔹 Optional: Uploads (if storing files locally)
+uploads/
+
+# 🔹 Optional: Firebase / service accounts
+*.json
+
+.env
