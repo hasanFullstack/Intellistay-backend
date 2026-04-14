@@ -27,7 +27,7 @@ jobs:
       - name: Run New Container from Latest Image
         run: |
           echo "Running container from latest image..."
-          sudo docker run -d --name intellistay-backend-container -p 3000:3000 intellistay-backend-image
+          sudo docker run -d --name intellistay-backend-container -p 5000:5000 intellistay-backend-image
       - name: Cleanup Unused Docker Images
         run: |
           echo "Cleaning up old Docker images..."
