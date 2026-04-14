@@ -5,8 +5,9 @@ FROM node:20-alpine AS base
 FROM base AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+The asterisk (*) makes the lock file optional
+COPY package.json package-lock*.json ./
+RUN npm install
 
 # 2. Rebuild the source code only when needed
 FROM base AS builder
