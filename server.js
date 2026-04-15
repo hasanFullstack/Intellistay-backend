@@ -30,18 +30,40 @@ connectDB();
 
 const app = express();
 
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://localhost:5175",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:5174",
+  "https://intellistay-frontend-5m9p.vercel.app",
+];
+
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true;
+
+  const normalizedOrigin = origin.replace(/\/+$/, "");
+  const isKnownOrigin = allowedOrigins.includes(normalizedOrigin);
+  const isIntellistayVercel =
+    /^https:\/\/intellistay-frontend(?:-[a-z0-9-]+)?\.vercel\.app$/i.test(
+      normalizedOrigin,
+    );
+
+  return isKnownOrigin || isIntellistayVercel;
+};
+
 // Security middleware
 app.use(securityHeaders);
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "http://localhost:5174",
-      "http://localhost:5175",
-      "http://127.0.0.1:5173",
-      "http://127.0.0.1:5174",
-      "https://intellistay-frontend-5m9p.vercel.app/"
-    ],
+    origin: (origin, callback) => {
+      if (isAllowedOrigin(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error("Not allowed by CORS"));
+    },
     credentials: true,
   }),
 );
