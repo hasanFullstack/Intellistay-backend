@@ -40,6 +40,7 @@ app.use(
       "http://localhost:5175",
       "http://127.0.0.1:5173",
       "http://127.0.0.1:5174",
+      "https://intellistay-frontend-5m9p.vercel.app/"
     ],
     credentials: true,
   }),
