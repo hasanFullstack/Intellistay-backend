@@ -9,6 +9,7 @@ import {
   getMatchLabel,
   getStrongMatches,
 } from "../utils/matchingEngine.js";
+import { resolveImageUrls } from "../utils/cdnUpload.js";
 
 export const addRoom = async (req, res) => {
   try {
@@ -25,13 +26,15 @@ export const addRoom = async (req, res) => {
       return res.status(403).json({ msg: "Unauthorized" });
     }
 
+    const imageUrls = await resolveImageUrls(images, "intellistay/rooms");
+
     const room = await Room.create({
       hostelId,
       roomType,
       totalBeds,
       availableBeds: totalBeds,
       pricePerBed,
-      images: images || [],
+      images: imageUrls,
       description: description || "",
     });
 
@@ -44,7 +47,16 @@ export const addRoom = async (req, res) => {
 export const getRoomsByHostel = async (req, res) => {
   try {
     const { hostelId } = req.params;
-    const rooms = await Room.find({ hostelId }).select({ images: { $slice: 1 }, roomType: 1, totalBeds: 1, availableBeds: 1, pricePerBed: 1, description: 1 });
+    const rooms = await Room.find({ hostelId })
+      .select({
+        images: { $slice: 1 },
+        roomType: 1,
+        totalBeds: 1,
+        availableBeds: 1,
+        pricePerBed: 1,
+        description: 1,
+      })
+      .lean();
     res.json(rooms);
   } catch (error) {
     res.status(500).json({ msg: error.message });
@@ -249,7 +261,16 @@ export const updateRoom = async (req, res) => {
       return res.status(403).json({ msg: "Unauthorized" });
     }
 
-    const updatedRoom = await Room.findByIdAndUpdate(roomId, req.body, {
+    const updatePayload = { ...req.body };
+
+    if (Object.prototype.hasOwnProperty.call(req.body, "images")) {
+      updatePayload.images = await resolveImageUrls(
+        req.body.images,
+        "intellistay/rooms",
+      );
+    }
+
+    const updatedRoom = await Room.findByIdAndUpdate(roomId, updatePayload, {
       new: true,
     });
 

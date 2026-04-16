@@ -5,6 +5,7 @@ import Booking from "../models/Booking.js";
 import { protect } from "../middleware/role.middleware.js";
 import { calculateCompatibilityScore } from "../utils/matchingEngine.js";
 import { cosineSimilarity } from "../utils/cosineSimilarity.js";
+import { resolveImageUrls } from "../utils/cdnUpload.js";
 
 const HOSTEL_LIST_FIELDS =
   "name addressLine1 addressLine2 city description images amenities rules environmentScore gender viewCount createdAt";
@@ -50,6 +51,8 @@ export const addHostel = async (req, res) => {
       return res.status(400).json({ msg: "Gender is required and must be either 'Male' or 'Female'" });
     }
 
+    const imageUrls = await resolveImageUrls(images, "intellistay/hostels");
+
     const hostel = await Hostel.create({
       name,
       addressLine1,
@@ -57,7 +60,7 @@ export const addHostel = async (req, res) => {
       city,
       description,
       amenities,
-      images,
+      images: imageUrls,
       rules,
       environmentScore,
       gender,
@@ -318,9 +321,18 @@ export const updateHostel = async (req, res) => {
       return res.status(403).json({ msg: "Unauthorized" });
     }
 
+    const updatePayload = { ...req.body };
+
+    if (Object.prototype.hasOwnProperty.call(req.body, "images")) {
+      updatePayload.images = await resolveImageUrls(
+        req.body.images,
+        "intellistay/hostels",
+      );
+    }
+
     const updatedHostel = await Hostel.findByIdAndUpdate(
       req.params.id,
-      req.body,
+      updatePayload,
       {
         new: true,
       },
