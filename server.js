@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from "url";
 import connectDB from "./config/db.js";
 import dns from "dns";
 
@@ -24,8 +26,24 @@ import {
 } from "./middleware/security.middleware.js";
 import errorHandler from "./middleware/errorHandler.js";
 let server;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Resolve env file path deterministically.
+// - local default: <backend-root>/.env
+// - deployed override: set ENV_FILE_PATH=/absolute/path/to/.env
+const resolvedEnvPath = process.env.ENV_FILE_PATH
+  ? path.resolve(process.env.ENV_FILE_PATH)
+  : path.resolve(__dirname, ".env");
+
 dns.setServers(["8.8.8.8", "8.8.4.4"]);
-dotenv.config();
+dotenv.config({ path: resolvedEnvPath });
+
+if (process.env.NODE_ENV !== "production") {
+  console.log(`Using env file: ${resolvedEnvPath}`);
+}
+
 connectDB();
 
 const app = express();

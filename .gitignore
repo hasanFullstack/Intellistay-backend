@@ -61,5 +61,3 @@ uploads/
 
 # 🔹 Optional: Firebase / service accounts
 *.json
-
-.env
