@@ -4,6 +4,7 @@ import nodemailer from "nodemailer";
 import Room from "../models/Room.js";
 import Hostel from "../models/Hostel.js";
 import User from "../models/Users.js";
+import Booking from "../models/Booking.js";
 
 let stripe = null;
 if (process.env.STRIPE_SECRET) {
@@ -365,5 +366,112 @@ export const createCheckoutSession = async (req, res, next) => {
     res.json({ id: session.id, url: session.url });
   } catch (err) {
     next(err);
+  }
+};
+
+export const finalizeBooking = async (req, res) => {
+  try {
+    const { sessionId, roomId, startDate, bedsBooked } = req.body;
+    const userId = req.user.id;
+
+    if (!sessionId || !roomId || !startDate || !bedsBooked) {
+      return res.status(400).json({ message: "Missing required booking details" });
+    }
+
+    if (!stripe) {
+      return res.status(500).json({ message: "Stripe not configured" });
+    }
+
+    // Idempotency: return existing booking if webhook already created it
+    const existing = await Booking.findOne({ stripeSessionId: sessionId });
+    if (existing) {
+      console.log("Booking already exists for session", sessionId, "(webhook already fired)");
+      return res.json({ success: true, booking: existing, source: "webhook" });
+    }
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (session.payment_status !== "paid") {
+      return res.status(400).json({ message: "Payment not completed" });
+    }
+
+    const booking = await Booking.create({
+      userId,
+      hostelId: session.metadata?.hostelId,
+      roomId,
+      startDate: new Date(startDate),
+      bedsBooked: parseInt(bedsBooked, 10),
+      totalPrice: session.amount_total / 100,
+      status: "confirmed",
+      stripeSessionId: sessionId,
+    });
+
+    // Notify hostel owner about the new booking (fallback path)
+    try {
+      const ownerHostelId = session.metadata?.hostelId;
+      if (ownerHostelId) {
+        const ownerHostel = await Hostel.findById(ownerHostelId).lean();
+        if (ownerHostel?.ownerId) {
+          const ownerUser = await User.findById(ownerHostel.ownerId)
+            .select("email name")
+            .lean();
+
+          if (ownerUser?.email) {
+            await mailTransporter.sendMail({
+              from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+              to: ownerUser.email,
+              subject: `New booking received — ${process.env.APP_NAME || "Intellistay"}`,
+              html: `
+                <p>Hi ${ownerUser.name || "Hostel Owner"},</p>
+                <p>You have received a new booking for your hostel.</p>
+                <p><strong>Hostel:</strong> ${ownerHostel.name || "-"}</p>
+                <p><strong>Room type:</strong> ${session.metadata?.roomType || "-"}</p>
+                <p><strong>Beds booked:</strong> ${bedsBooked}</p>
+                <p><strong>Check-in date:</strong> ${startDate}</p>
+                <p><strong>Total:</strong> ${session.amount_total ? (session.amount_total / 100).toFixed(2) + " " + (session.currency || "pkr").toUpperCase() : "-"}</p>
+                <p><strong>Stripe session:</strong> ${sessionId}</p>
+              `,
+            });
+            console.log("Hostel owner email sent to", ownerUser.email);
+          }
+        }
+      }
+    } catch (ownerEmailErr) {
+      console.error(
+        "Failed to send hostel owner email (fallback):",
+        ownerEmailErr.message || ownerEmailErr,
+      );
+    }
+
+    await Room.findByIdAndUpdate(
+      roomId,
+      { $inc: { availableBeds: -parseInt(bedsBooked, 10) } },
+      { new: true }
+    );
+
+    console.log("Booking finalized (fallback, webhook didn't fire):", booking._id);
+
+    res.json({ success: true, booking, source: "fallback" });
+  } catch (err) {
+    // Duplicate key means webhook created it between our check and create — return it
+    if (err.code === 11000) {
+      const booking = await Booking.findOne({ stripeSessionId: req.body.sessionId });
+      if (booking) return res.json({ success: true, booking, source: "webhook" });
+    }
+    console.error("Error finalizing booking:", err);
+    res.status(500).json({ success: false, message: "Failed to finalize booking", error: err.message });
+  }
+};
+
+export const getBookingBySession = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const booking = await Booking.findOne({ stripeSessionId: sessionId });
+    if (!booking) {
+      return res.status(404).json({ found: false });
+    }
+    res.json({ found: true, booking });
+  } catch (err) {
+    res.status(500).json({ found: false, message: err.message });
   }
 };
