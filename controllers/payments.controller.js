@@ -142,6 +142,8 @@ export const createCheckoutSession = async (req, res, next) => {
       successUrl,
       cancelUrl,
       currency = "pkr",
+      startDate,
+      bedsBooked,
     } = req.body;
 
     let line_items;
@@ -214,6 +216,9 @@ export const createCheckoutSession = async (req, res, next) => {
         totalBeds: String(room.totalBeds || ""),
         availableBeds: String(room.availableBeds || ""),
         gender: (hostel && hostel.gender) || "",
+        startDate: startDate || "",
+        bedsBooked: String(bedsBooked || quantity || 1),
+        userId: req.user ? req.user.id : "",
       };
     } else if (items && items.length) {
       line_items = items.map((it) => ({

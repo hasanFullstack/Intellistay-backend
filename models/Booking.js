@@ -21,10 +21,6 @@ const bookingSchema = new mongoose.Schema(
       type: Date,
       required: true,
     },
-    endDate: {
-      type: Date,
-      required: true,
-    },
     bedsBooked: {
       type: Number,
       required: true,
@@ -47,6 +43,6 @@ const bookingSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-bookingSchema.index({ roomId: 1, status: 1, endDate: 1 });
+bookingSchema.index({ roomId: 1, status: 1, startDate: 1 });
 
 export default mongoose.model("Booking", bookingSchema);

@@ -6,7 +6,6 @@ const getActiveRoomBookings = async (roomId, excludeBookingId = null) => {
   const query = {
     roomId,
     status: "confirmed",
-    endDate: { $gte: new Date() },
   };
 
   if (excludeBookingId) {
@@ -39,7 +38,7 @@ const allocateBedNumbers = (totalBeds, occupiedSet, requiredBeds) => {
 
 export const createBooking = async (req, res) => {
   try {
-    const { hostelId, roomId, startDate, endDate, bedsBooked } = req.body;
+    const { hostelId, roomId, startDate, bedsBooked } = req.body;
 
     // Verify hostel exists
     const hostel = await Hostel.findById(hostelId);
@@ -86,7 +85,6 @@ export const createBooking = async (req, res) => {
       hostelId,
       roomId,
       startDate,
-      endDate,
       bedsBooked,
       bedNumbers: assignedBeds,
       totalPrice,

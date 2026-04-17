@@ -2,6 +2,8 @@ import Stripe from "stripe";
 import nodemailer from "nodemailer";
 import Hostel from "../models/Hostel.js";
 import User from "../models/Users.js";
+import Booking from "../models/Booking.js";
+import Room from "../models/Room.js";
 
 let stripe = null;
 if (process.env.STRIPE_SECRET) {
@@ -58,6 +60,34 @@ export const handleStripeWebhook = async (req, res) => {
         const amount = session.amount_total; // already in smallest currency unit
         const currency = session.currency || "pkr";
         const metadata = session.metadata || {};
+
+        // Create booking record if we have the necessary details
+        try {
+          const { roomId, hostelId, userId, startDate, bedsBooked } = metadata;
+          
+          if (roomId && hostelId && userId && startDate) {
+            const booking = await Booking.create({
+              userId,
+              hostelId,
+              roomId,
+              startDate: new Date(startDate),
+              bedsBooked: parseInt(bedsBooked || 1, 10),
+              totalPrice: amount / 100, // convert from paisa to currency
+              status: "confirmed",
+            });
+            
+            // Reduce available beds in the room
+            await Room.findByIdAndUpdate(
+              roomId,
+              { $inc: { availableBeds: -parseInt(bedsBooked || 1, 10) } },
+              { new: true }
+            );
+            
+            console.log("Booking created:", booking._id);
+          }
+        } catch (bookingErr) {
+          console.error("Failed to create booking record:", bookingErr.message || bookingErr);
+        }
 
         // Build email content
         const roomDetailsHtml = `
