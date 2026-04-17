@@ -40,6 +40,26 @@ function isValidWebUrl(u, maxLen = 2048) {
   }
 }
 
+function buildFrontendBaseUrl(req) {
+  const fromClientUrl = process.env.CLIENT_URL;
+  const fromOrigin = req?.headers?.origin;
+  const fromReferer = req?.headers?.referer;
+
+  if (isValidWebUrl(fromClientUrl)) return fromClientUrl.replace(/\/+$/, "");
+  if (isValidWebUrl(fromOrigin)) return fromOrigin.replace(/\/+$/, "");
+
+  if (isValidWebUrl(fromReferer)) {
+    try {
+      const parsed = new URL(fromReferer);
+      return `${parsed.protocol}//${parsed.host}`;
+    } catch {
+      // ignore parse errors and fallback below
+    }
+  }
+
+  return "http://localhost:5173";
+}
+
 export const sendTestEmail = async (req, res) => {
   try {
     console.log(process.env.SMTP_PASS);
@@ -217,12 +237,25 @@ export const createCheckoutSession = async (req, res, next) => {
       ];
     }
 
+    // Validate provided success/cancel URLs (if any)
+    if (successUrl && !isValidWebUrl(successUrl)) {
+      return res.status(400).json({ message: "Invalid successUrl provided" });
+    }
+    if (cancelUrl && !isValidWebUrl(cancelUrl)) {
+      return res.status(400).json({ message: "Invalid cancelUrl provided" });
+    }
+
+    const frontendBase = buildFrontendBaseUrl(req);
+    const resolvedSuccessUrl =
+      successUrl || `${frontendBase}/booking-success?session_id={CHECKOUT_SESSION_ID}`;
+    const resolvedCancelUrl = cancelUrl || `${frontendBase}/payment-cancel`;
+
     const sessionParams = {
       payment_method_types: ["card"],
       mode: "payment",
       line_items,
-      success_url: "http://localhost:5173/success",
-      cancel_url: "http://localhost:5173/cancel",
+      success_url: resolvedSuccessUrl,
+      cancel_url: resolvedCancelUrl,
     };
 
     // Sanitize image URLs in line_items: Stripe rejects data: URIs or very long URLs.
@@ -257,14 +290,6 @@ export const createCheckoutSession = async (req, res, next) => {
         "Stripe sessionParams:",
         JSON.stringify(sessionParams, null, 2),
       );
-    }
-
-    // Validate provided success/cancel URLs (if any)
-    if (successUrl && !isValidWebUrl(successUrl)) {
-      return res.status(400).json({ message: "Invalid successUrl provided" });
-    }
-    if (cancelUrl && !isValidWebUrl(cancelUrl)) {
-      return res.status(400).json({ message: "Invalid cancelUrl provided" });
     }
 
     let session;
