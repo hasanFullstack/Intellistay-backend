@@ -102,15 +102,6 @@ export const getAllHostels = async (req, res) => {
       return res.json(hostels);
     }
 
-    // Filters beyond "All Hostels" are only allowed for authenticated students
-    await new Promise((resolve) => protect(req, res, resolve));
-    if (!req.user) return; // protect already sent response
-    if (req.user.role !== "student") {
-      return res
-        .status(403)
-        .json({ msg: "Filters available to students only" });
-    }
-
     // Normalize filter strings
     const f = String(filter).toLowerCase();
 
@@ -158,6 +149,14 @@ export const getAllHostels = async (req, res) => {
       f === "recommend" ||
       f === "recommended hostels"
     ) {
+      await new Promise((resolve) => protect(req, res, resolve));
+      if (!req.user) return; // protect already sent response
+      if (req.user.role !== "student") {
+        return res
+          .status(403)
+          .json({ msg: "Recommended filter is available to students only" });
+      }
+
       const userVector = Array.isArray(req.user.personalityVector)
         ? req.user.personalityVector
         : [];
@@ -194,7 +193,9 @@ export const getAllHostels = async (req, res) => {
 
     // BUDGET OPTIMIZED: combine cosine similarity (student vector) with price
     if (f === "budget optimized" || f === "budget") {
-      const userVector = req.user.personalityVector || [];
+      const userVector = Array.isArray(req.user?.personalityVector)
+        ? req.user.personalityVector
+        : [];
 
       // Optimize: limit initial fetch
       const envs = await HostelEnvironment.find({
@@ -224,6 +225,8 @@ export const getAllHostels = async (req, res) => {
         priceStats.map((item) => [String(item._id), item.hostelPrice || 0]),
       );
 
+      const isPersonalizedBudget = Boolean(req.user?._id && userVector.length > 0);
+
       // Compute min price per hostel and match score
       const results = [];
       let maxPrice = 0;
@@ -235,10 +238,9 @@ export const getAllHostels = async (req, res) => {
         const hostelPrice = priceMap.get(String(hostel._id)) || 0;
         if (hostelPrice > maxPrice) maxPrice = hostelPrice;
 
-        const matchScore = cosineSimilarity(
-          userVector || [],
-          env.hostelVector || [],
-        );
+        const matchScore = isPersonalizedBudget
+          ? cosineSimilarity(userVector, env.hostelVector || [])
+          : 0;
 
         results.push({ hostel, matchScore, hostelPrice });
       }
@@ -247,7 +249,9 @@ export const getAllHostels = async (req, res) => {
       results.forEach((r) => {
         const budgetScore =
           maxPrice > 0 ? (maxPrice - r.hostelPrice) / maxPrice : 0;
-        r.finalScore = 0.7 * (r.matchScore || 0) + 0.3 * budgetScore;
+        r.finalScore = isPersonalizedBudget
+          ? 0.7 * (r.matchScore || 0) + 0.3 * budgetScore
+          : budgetScore;
       });
 
       results.sort((a, b) => b.finalScore - a.finalScore);
