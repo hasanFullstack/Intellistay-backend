@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import crypto from "crypto";
 import nodemailer from "nodemailer";
 import Room from "../models/Room.js";
 import Hostel from "../models/Hostel.js";
@@ -252,7 +253,8 @@ export const createCheckoutSession = async (req, res, next) => {
 
     const frontendBase = buildFrontendBaseUrl(req);
     const resolvedSuccessUrl =
-      successUrl || `${frontendBase}/booking-success?session_id={CHECKOUT_SESSION_ID}`;
+      successUrl ||
+      `${frontendBase}/booking-success?session_id={CHECKOUT_SESSION_ID}`;
     const resolvedCancelUrl = cancelUrl || `${frontendBase}/payment-cancel`;
 
     const sessionParams = {
@@ -286,6 +288,18 @@ export const createCheckoutSession = async (req, res, next) => {
     }
 
     if (typeof sessionMetadata !== "undefined") {
+      // Add non-identifying hash of the user's email for internal tracing (avoids storing raw PII)
+      if (req.user && req.user.email) {
+        try {
+          sessionMetadata.userEmailHash = crypto
+            .createHash("sha256")
+            .update(String(req.user.email))
+            .digest("hex");
+        } catch (e) {
+          // ignore hashing errors
+        }
+      }
+
       sessionParams.metadata = sessionMetadata;
       sessionParams.client_reference_id = roomId;
     }
@@ -296,6 +310,9 @@ export const createCheckoutSession = async (req, res, next) => {
         JSON.stringify(sessionParams, null, 2),
       );
     }
+
+    // Ensure we never send the user's raw login email to Stripe Checkout session
+    if (sessionParams.customer_email) delete sessionParams.customer_email;
 
     let session;
     try {

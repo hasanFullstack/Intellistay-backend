@@ -64,7 +64,7 @@ export const handleStripeWebhook = async (req, res) => {
         // Create booking record if we have the necessary details
         try {
           const { roomId, hostelId, userId, startDate, bedsBooked } = metadata;
-          
+
           if (roomId && hostelId && userId && startDate) {
             const booking = await Booking.create({
               userId,
@@ -75,32 +75,95 @@ export const handleStripeWebhook = async (req, res) => {
               totalPrice: amount / 100, // convert from paisa to currency
               status: "confirmed",
             });
-            
+
             // Reduce available beds in the room
             await Room.findByIdAndUpdate(
               roomId,
               { $inc: { availableBeds: -parseInt(bedsBooked || 1, 10) } },
-              { new: true }
+              { new: true },
             );
-            
+
             console.log("Booking created:", booking._id);
           }
         } catch (bookingErr) {
-          console.error("Failed to create booking record:", bookingErr.message || bookingErr);
+          console.error(
+            "Failed to create booking record:",
+            bookingErr.message || bookingErr,
+          );
         }
 
-        // Build email content
+        // Build email content — resolve Room and Hostel names to avoid showing raw IDs
+        let roomName = metadata.roomName || "-";
+        let hostelName = metadata.hostelName || "-";
+        try {
+          if (metadata.roomId) {
+            const roomDoc = await Room.findById(metadata.roomId)
+              .populate("hostelId", "name")
+              .lean();
+            if (roomDoc) {
+              roomName = roomDoc.name || String(roomDoc._id);
+              if (roomDoc.hostelId && roomDoc.hostelId.name)
+                hostelName = roomDoc.hostelId.name;
+            }
+          } else if (metadata.hostelId) {
+            const hostDoc = await Hostel.findById(metadata.hostelId)
+              .select("name")
+              .lean();
+            if (hostDoc && hostDoc.name) hostelName = hostDoc.name;
+          }
+        } catch (nameErr) {
+          console.warn(
+            "Could not resolve room/hostel names:",
+            nameErr.message || nameErr,
+          );
+        }
+
+        const beds =
+          parseInt(
+            metadata.bedsBooked ||
+              metadata.beds ||
+              session.quantity ||
+              session.beds ||
+              1,
+            10,
+          ) || 1;
+
         const roomDetailsHtml = `
           <h3>Booking Details</h3>
-          <p><strong>Room:</strong> ${metadata.roomId || "-"}</p>
-          <p><strong>Hostel:</strong> ${metadata.hostelId || "-"}</p>
+          <p><strong>Room:</strong> ${roomName}</p>
+          <p><strong>Hostel:</strong> ${hostelName}</p>
           <p><strong>Type:</strong> ${metadata.roomType || "-"}</p>
           <p><strong>Price per bed:</strong> ${metadata.pricePerBed || "-"} ${currency.toUpperCase()}</p>
-          <p><strong>Quantity:</strong> ${session.quantity || 1}</p>
+          <p><strong>Beds:</strong> ${beds}</p>
           <p><strong>Total:</strong> ${amount ? (amount / 100).toFixed(2) + " " + currency.toUpperCase() : "-"}</p>
         `;
 
-        // Send email to customer
+        // Prepare session copies with metadata names and replace quantity with beds
+        const sessionWithNames = JSON.parse(JSON.stringify(session));
+        if (
+          sessionWithNames.metadata &&
+          typeof sessionWithNames.metadata === "object"
+        ) {
+          if (roomName) sessionWithNames.metadata.roomId = roomName;
+          if (hostelName) sessionWithNames.metadata.hostelId = hostelName;
+          sessionWithNames.metadata.bedsBooked = String(beds);
+        }
+        // normalize top-level quantity and line_items quantities to show beds
+        try {
+          sessionWithNames.quantity = beds;
+          if (Array.isArray(sessionWithNames.line_items)) {
+            sessionWithNames.line_items = sessionWithNames.line_items.map(
+              (li) => ({
+                ...li,
+                quantity: beds,
+              }),
+            );
+          }
+        } catch (e) {
+          // ignore normalization errors
+        }
+
+        // Send email to customer (include same booking details as admin, but do not redact customer's own email)
         if (customerEmail) {
           await transporter.sendMail({
             from: process.env.FROM_EMAIL || process.env.SMTP_USER,
@@ -108,7 +171,9 @@ export const handleStripeWebhook = async (req, res) => {
             subject: `Booking confirmed — ${process.env.APP_NAME || "Your Booking"}`,
             html: `
               <p>Thank you for your payment. Your booking is confirmed.</p>
+              <p><strong>Session ID:</strong> ${session.id}</p>
               ${roomDetailsHtml}
+              <pre>${JSON.stringify(sessionWithNames, null, 2)}</pre>
             `,
           });
           console.log("Customer email sent to", customerEmail);
@@ -116,6 +181,37 @@ export const handleStripeWebhook = async (req, res) => {
 
         // Send email to admin
         if (process.env.ADMIN_EMAIL) {
+          // Redact any customer email before sending session details to admin
+          const sanitizedSession = JSON.parse(JSON.stringify(session));
+          if (sanitizedSession.customer_details) {
+            sanitizedSession.customer_details.email = "[REDACTED]";
+          }
+          if (sanitizedSession.customer_email)
+            sanitizedSession.customer_email = "[REDACTED]";
+
+          // Replace IDs in metadata with resolved names and normalize quantities to avoid leaking raw IDs/Quantity
+          if (
+            sanitizedSession.metadata &&
+            typeof sanitizedSession.metadata === "object"
+          ) {
+            if (roomName) sanitizedSession.metadata.roomId = roomName;
+            if (hostelName) sanitizedSession.metadata.hostelId = hostelName;
+            sanitizedSession.metadata.bedsBooked = String(beds);
+          }
+          try {
+            sanitizedSession.quantity = beds;
+            if (Array.isArray(sanitizedSession.line_items)) {
+              sanitizedSession.line_items = sanitizedSession.line_items.map(
+                (li) => ({
+                  ...li,
+                  quantity: beds,
+                }),
+              );
+            }
+          } catch (e) {
+            // ignore normalization errors
+          }
+
           await transporter.sendMail({
             from: process.env.FROM_EMAIL || process.env.SMTP_USER,
             to: process.env.ADMIN_EMAIL,
@@ -124,7 +220,7 @@ export const handleStripeWebhook = async (req, res) => {
               <p>New booking completed via Stripe.</p>
               <p><strong>Session ID:</strong> ${session.id}</p>
               ${roomDetailsHtml}
-              <pre>${JSON.stringify(session, null, 2)}</pre>
+              <pre>${JSON.stringify(sanitizedSession, null, 2)}</pre>
             `,
           });
           console.log("Admin email sent to", process.env.ADMIN_EMAIL);
