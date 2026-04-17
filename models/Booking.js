@@ -39,10 +39,16 @@ const bookingSchema = new mongoose.Schema(
       enum: ["pending", "confirmed", "cancelled", "completed"],
       default: "confirmed",
     },
+    stripeSessionId: {
+      type: String,
+      default: null,
+    },
   },
   { timestamps: true },
 );
 
 bookingSchema.index({ roomId: 1, status: 1, startDate: 1 });
+// Sparse unique index: prevents duplicate bookings for the same Stripe session
+bookingSchema.index({ stripeSessionId: 1 }, { unique: true, sparse: true });
 
 export default mongoose.model("Booking", bookingSchema);

@@ -64,26 +64,35 @@ export const handleStripeWebhook = async (req, res) => {
         // Create booking record if we have the necessary details
         try {
           const { roomId, hostelId, userId, startDate, bedsBooked } = metadata;
+          console.log("Metadata received:", { roomId, hostelId, userId, startDate, bedsBooked });
           
           if (roomId && hostelId && userId && startDate) {
-            const booking = await Booking.create({
-              userId,
-              hostelId,
-              roomId,
-              startDate: new Date(startDate),
-              bedsBooked: parseInt(bedsBooked || 1, 10),
-              totalPrice: amount / 100, // convert from paisa to currency
-              status: "confirmed",
-            });
-            
-            // Reduce available beds in the room
-            await Room.findByIdAndUpdate(
-              roomId,
-              { $inc: { availableBeds: -parseInt(bedsBooked || 1, 10) } },
-              { new: true }
-            );
-            
-            console.log("Booking created:", booking._id);
+            // Idempotency check — skip if this session already created a booking
+            const existing = await Booking.findOne({ stripeSessionId: session.id });
+            if (existing) {
+              console.log("Booking already exists for session", session.id, "— skipping duplicate");
+            } else {
+              const booking = await Booking.create({
+                userId,
+                hostelId,
+                roomId,
+                startDate: new Date(startDate),
+                bedsBooked: parseInt(bedsBooked || 1, 10),
+                totalPrice: amount / 100,
+                status: "confirmed",
+                stripeSessionId: session.id,
+              });
+              
+              await Room.findByIdAndUpdate(
+                roomId,
+                { $inc: { availableBeds: -parseInt(bedsBooked || 1, 10) } },
+                { new: true }
+              );
+              
+              console.log("Booking created via webhook:", booking._id);
+            }
+          } else {
+            console.warn("Webhook: missing metadata fields — booking not created.", metadata);
           }
         } catch (bookingErr) {
           console.error("Failed to create booking record:", bookingErr.message || bookingErr);
@@ -129,6 +138,44 @@ export const handleStripeWebhook = async (req, res) => {
           });
           console.log("Admin email sent to", process.env.ADMIN_EMAIL);
         }
+
+        // Send email to hostel owner
+        try {
+          const ownerHostelId = metadata.hostelId || metadata.hostel || null;
+          if (ownerHostelId) {
+            const ownerHostel = await Hostel.findById(ownerHostelId).lean();
+            if (ownerHostel && ownerHostel.ownerId) {
+              const ownerUser = await User.findById(ownerHostel.ownerId)
+                .select("email name")
+                .lean();
+
+              if (ownerUser?.email) {
+                await transporter.sendMail({
+                  from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+                  to: ownerUser.email,
+                  subject: `New booking received — ${process.env.APP_NAME || "Intellistay"}`,
+                  html: `
+                    <p>Hi ${ownerUser.name || "Hostel Owner"},</p>
+                    <p>You have received a new booking for your hostel.</p>
+                    <p><strong>Hostel:</strong> ${ownerHostel.name || metadata.hostelId || "-"}</p>
+                    <p><strong>Room type:</strong> ${metadata.roomType || "-"}</p>
+                    <p><strong>Beds booked:</strong> ${metadata.bedsBooked || 1}</p>
+                    <p><strong>Check-in date:</strong> ${metadata.startDate || "-"}</p>
+                    <p><strong>Total:</strong> ${amount ? (amount / 100).toFixed(2) + " " + currency.toUpperCase() : "-"}</p>
+                    <p><strong>Stripe session:</strong> ${session.id}</p>
+                  `,
+                });
+                console.log("Hostel owner email sent to", ownerUser.email);
+              }
+            }
+          }
+        } catch (ownerEmailErr) {
+          console.error(
+            "Failed to send hostel owner email:",
+            ownerEmailErr.message || ownerEmailErr,
+          );
+        }
+
         // Attempt to transfer funds to owner if this booking belongs to a hostel with an owner
         try {
           const hostelId =
