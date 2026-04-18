@@ -29,6 +29,18 @@ const transporter = nodemailer.createTransport({
     : undefined,
 });
 
+// Remove JSON / <pre> dumps and session id lines from customer-facing HTML
+function sanitizeCustomerHtml(html) {
+  if (!html || typeof html !== "string") return html;
+  // remove any <pre>...</pre> blocks
+  html = html.replace(/<pre>[\s\S]*?<\/pre>/gi, "");
+  // remove any paragraph that contains 'Session ID'
+  html = html.replace(/<p[^>]*>[^<]*Session ID[^<]*<\/p>/gi, "");
+  // remove large JSON-like blocks between braces
+  html = html.replace(/\{[\s\S]*?\}/g, "");
+  return html;
+}
+
 export const handleStripeWebhook = async (req, res) => {
   if (!stripe) {
     console.error(
@@ -64,7 +76,7 @@ export const handleStripeWebhook = async (req, res) => {
         // Create booking record if we have the necessary details
         try {
           const { roomId, hostelId, userId, startDate, bedsBooked } = metadata;
-          
+
           if (roomId && hostelId && userId && startDate) {
             const booking = await Booking.create({
               userId,
@@ -75,14 +87,14 @@ export const handleStripeWebhook = async (req, res) => {
               totalPrice: amount / 100, // convert from paisa to currency
               status: "confirmed",
             });
-            
+
             // Reduce available beds in the room
             await Room.findByIdAndUpdate(
               roomId,
               { $inc: { availableBeds: -parseInt(bedsBooked || 1, 10) } },
-              { new: true }
+              { new: true },
             );
-            
+
             console.log("Booking created:", booking._id);
           }
         } catch (bookingErr) {
@@ -120,11 +132,7 @@ export const handleStripeWebhook = async (req, res) => {
 
         const beds =
           parseInt(
-            metadata.bedsBooked ||
-              metadata.beds ||
-              session.quantity ||
-              session.beds ||
-              1,
+            metadata.bedsBooked || metadata.beds || session.beds || 1,
             10,
           ) || 1;
 
@@ -163,18 +171,30 @@ export const handleStripeWebhook = async (req, res) => {
           // ignore normalization errors
         }
 
-        // Send email to customer (include same booking details as admin, but do not redact customer's own email)
+        // Send simplified email to customer (only booking details, no session ID or JSON)
         if (customerEmail) {
+          console.log(
+            "Preparing to send simplified customer email to",
+            customerEmail,
+          );
+          const customerHtml = `
+            <h2>Booking Confirmed ✓</h2>
+            <p>Thank you for your payment! Your booking has been successfully confirmed.</p>
+            <h3>Booking Details</h3>
+            <p><strong>Room:</strong> ${roomName}</p>
+            <p><strong>Hostel:</strong> ${hostelName}</p>
+            <p><strong>Type:</strong> ${metadata.roomType || "-"}</p>
+            <p><strong>Number of Beds:</strong> ${beds}</p>
+            <p><strong>Price per Bed:</strong> ${metadata.pricePerBed || "-"} ${currency.toUpperCase()}</p>
+            <p><strong>Check-in Date:</strong> ${metadata.startDate || "-"}</p>
+            <p style="font-weight: bold; margin-top: 15px;"><strong>Total Amount Paid:</strong> ${amount ? (amount / 100).toFixed(2) + " " + currency.toUpperCase() : "-"}</p>
+            <p style="margin-top: 20px; color: #666;">If you have any questions about your booking, please contact us at ${process.env.ADMIN_EMAIL || "support"}.</p>
+          `;
           await transporter.sendMail({
             from: process.env.FROM_EMAIL || process.env.SMTP_USER,
             to: customerEmail,
             subject: `Booking confirmed — ${process.env.APP_NAME || "Your Booking"}`,
-            html: `
-              <p>Thank you for your payment. Your booking is confirmed.</p>
-              <p><strong>Session ID:</strong> ${session.id}</p>
-              ${roomDetailsHtml}
-              <pre>${JSON.stringify(sessionWithNames, null, 2)}</pre>
-            `,
+            html: customerHtml,
           });
           console.log("Customer email sent to", customerEmail);
         }
@@ -218,51 +238,25 @@ export const handleStripeWebhook = async (req, res) => {
             subject: `New booking received — ${process.env.APP_NAME || "App"}`,
             html: `
               <p>New booking completed via Stripe.</p>
-              <p><strong>Session ID:</strong> ${session.id}</p>
               ${roomDetailsHtml}
-              <pre>${JSON.stringify(sanitizedSession, null, 2)}</pre>
+              <h3>Session summary</h3>
+              <p><strong>Session ID:</strong> ${session.id}</p>
+              <p><strong>Payment status:</strong> ${sanitizedSession.payment_status || sanitizedSession.status || "-"}</p>
+              <p><strong>Amount:</strong> ${sanitizedSession.amount_total ? (sanitizedSession.amount_total / 100).toFixed(2) + " " + (sanitizedSession.currency || "pkr").toUpperCase() : "-"}</p>
+              <p><strong>Customer name:</strong> ${sanitizedSession.customer_details?.name || "-"}</p>
+              <p><strong>Customer email:</strong> ${sanitizedSession.customer_details?.email || sanitizedSession.customer_email || "-"}</p>
+              <h4>Metadata</h4>
+              <ul>
+                <li><strong>Room:</strong> ${sanitizedSession.metadata?.roomId || "-"}</li>
+                <li><strong>Hostel:</strong> ${sanitizedSession.metadata?.hostelId || "-"}</li>
+                <li><strong>Start date:</strong> ${sanitizedSession.metadata?.startDate || "-"}</li>
+                <li><strong>Beds booked:</strong> ${sanitizedSession.metadata?.bedsBooked || "-"}</li>
+                <li><strong>Price per bed:</strong> ${sanitizedSession.metadata?.pricePerBed || "-"}</li>
+              </ul>
             `,
           });
           console.log("Admin email sent to", process.env.ADMIN_EMAIL);
         }
-
-        // Send email to hostel owner
-        try {
-          const ownerHostelId = metadata.hostelId || metadata.hostel || null;
-          if (ownerHostelId) {
-            const ownerHostel = await Hostel.findById(ownerHostelId).lean();
-            if (ownerHostel && ownerHostel.ownerId) {
-              const ownerUser = await User.findById(ownerHostel.ownerId)
-                .select("email name")
-                .lean();
-
-              if (ownerUser?.email) {
-                await transporter.sendMail({
-                  from: process.env.FROM_EMAIL || process.env.SMTP_USER,
-                  to: ownerUser.email,
-                  subject: `New booking received — ${process.env.APP_NAME || "Intellistay"}`,
-                  html: `
-                    <p>Hi ${ownerUser.name || "Hostel Owner"},</p>
-                    <p>You have received a new booking for your hostel.</p>
-                    <p><strong>Hostel:</strong> ${ownerHostel.name || metadata.hostelId || "-"}</p>
-                    <p><strong>Room type:</strong> ${metadata.roomType || "-"}</p>
-                    <p><strong>Beds booked:</strong> ${metadata.bedsBooked || 1}</p>
-                    <p><strong>Check-in date:</strong> ${metadata.startDate || "-"}</p>
-                    <p><strong>Total:</strong> ${amount ? (amount / 100).toFixed(2) + " " + currency.toUpperCase() : "-"}</p>
-                    <p><strong>Stripe session:</strong> ${session.id}</p>
-                  `,
-                });
-                console.log("Hostel owner email sent to", ownerUser.email);
-              }
-            }
-          }
-        } catch (ownerEmailErr) {
-          console.error(
-            "Failed to send hostel owner email:",
-            ownerEmailErr.message || ownerEmailErr,
-          );
-        }
-
         // Attempt to transfer funds to owner if this booking belongs to a hostel with an owner
         try {
           const hostelId =
