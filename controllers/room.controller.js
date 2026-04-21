@@ -327,13 +327,16 @@ export const getRoomOccupants = async (req, res) => {
     const room = await Room.findById(roomId);
     if (!room) return res.status(404).json({ msg: "Room not found" });
 
-    const today = new Date();
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
 
-    // Find confirmed bookings that haven't ended yet
+    // Active occupants are confirmed bookings that have started.
+    // The Booking schema does not store `endDate`, so filtering by it hides
+    // valid confirmed monthly bookings from the compatibility section.
     const bookings = await Booking.find({
       roomId,
       status: "confirmed",
-      endDate: { $gte: today },
+      startDate: { $lte: todayEnd },
     }).populate("userId", "name personalityVector personalityScore");
 
     if (!bookings || bookings.length === 0) {

@@ -104,7 +104,7 @@ export const createBooking = async (req, res) => {
 export const getUserBookings = async (req, res) => {
   try {
     const bookings = await Booking.find({ userId: req.user.id })
-      .populate("hostelId", "name addressLine1 addressLine2 city gender")
+      .populate("hostelId", "name addressLine1 addressLine2 city gender images")
       .populate("roomId", "roomType pricePerBed");
     res.json(bookings);
   } catch (error) {
@@ -171,7 +171,7 @@ export const getOwnerBookings = async (req, res) => {
         match: { ownerId: req.user.id },
         select: "name addressLine1 addressLine2 city gender",
       })
-      .populate("roomId", "roomType pricePerBed")
+      .populate("roomId", "roomType pricePerBed roomLabel")
       .populate("userId", "name email");
 
     // Filter out bookings where hostel is null (doesn't belong to this owner)
