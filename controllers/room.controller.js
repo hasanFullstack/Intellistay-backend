@@ -30,6 +30,10 @@ export const addRoom = async (req, res) => {
 
     const room = await Room.create({
       hostelId,
+      // assign next available per-hostel room number
+      number: (await Room.findOne({ hostelId }).sort({ number: -1 }).select("number").lean())?.number
+        ? (await Room.findOne({ hostelId }).sort({ number: -1 }).select("number").lean()).number + 1
+        : 1,
       roomType,
       totalBeds,
       availableBeds: totalBeds,
@@ -53,6 +57,7 @@ export const getRoomsByHostel = async (req, res) => {
         roomType: 1,
         totalBeds: 1,
         availableBeds: 1,
+        number: 1,
         pricePerBed: 1,
         description: 1,
       })
@@ -193,6 +198,7 @@ export const getAllRooms = async (req, res) => {
           roomType: 1,
           totalBeds: 1,
           availableBeds: 1,
+          number: 1,
           pricePerBed: 1,
           description: 1,
           images: { $slice: ["$images", 1] },

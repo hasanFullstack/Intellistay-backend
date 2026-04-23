@@ -1,6 +1,6 @@
 import express from "express";
 import { body, validationResult } from "express-validator";
-import { register, login } from "../controllers/auth.controller.js";
+import { register, login, updateProfile } from "../controllers/auth.controller.js";
 import { protect } from "../middleware/role.middleware.js";
 
 const router = express.Router();
@@ -49,5 +49,9 @@ router.post(
 router.get("/profile", protect, (req, res) => {
   res.json({ user: req.user });
 });
+
+// Update current user's profile
+router.put("/profile", protect, updateProfile);
+
 
 export default router;

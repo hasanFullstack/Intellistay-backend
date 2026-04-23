@@ -87,6 +87,7 @@ export const createBooking = async (req, res) => {
       startDate,
       bedsBooked,
       bedNumbers: assignedBeds,
+      roomNumber: room.number,
       totalPrice,
       status: "confirmed",
     });
@@ -229,6 +230,7 @@ export const acceptBooking = async (req, res) => {
       }
 
       booking.bedNumbers = assignedBeds;
+      booking.roomNumber = room.number;
       room.availableBeds -= booking.bedsBooked;
       await room.save();
     }

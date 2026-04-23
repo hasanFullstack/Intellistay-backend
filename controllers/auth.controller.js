@@ -1,4 +1,5 @@
 import User from "../models/Users.js";
+import { resolveImageUrls } from "../utils/cdnUpload.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
@@ -45,5 +46,47 @@ export const login = async (req, res) => {
     res.json({ token, user });
   } catch (error) {
     res.status(500).json({ msg: error.message });
+  }
+};
+
+export const updateProfile = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { name, email, description, image } = req.body;
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ msg: "User not found" });
+
+    if (email && String(email).toLowerCase() !== String(user.email).toLowerCase()) {
+      const exists = await User.findOne({ email: String(email).toLowerCase() });
+      if (exists) return res.status(400).json({ msg: "Email already in use" });
+      user.email = String(email).toLowerCase();
+    }
+
+    if (name) user.name = name;
+    if (description !== undefined) user.description = description;
+    if (image !== undefined) {
+      // If image looks like a data URL or base64, upload it to CDN and store the resolved URL
+      if (typeof image === "string" && image.startsWith("data:")) {
+        try {
+          const uploaded = await resolveImageUrls([image], "intellistay/owners");
+          user.image = Array.isArray(uploaded) && uploaded[0] ? uploaded[0] : "";
+        } catch (err) {
+          // fallback to storing raw image string if upload fails
+          user.image = image;
+        }
+      } else {
+        user.image = image;
+      }
+    }
+
+    await user.save();
+
+    const returned = user.toObject();
+    delete returned.password;
+
+    res.json({ user: returned });
+  } catch (err) {
+    res.status(500).json({ msg: err.message });
   }
 };

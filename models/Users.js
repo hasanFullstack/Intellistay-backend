@@ -49,6 +49,16 @@ const userSchema = new mongoose.Schema(
       default: [],
     },
 
+    // Owner/public profile fields
+    description: {
+      type: String,
+      default: "",
+    },
+    image: {
+      type: String,
+      default: "",
+    },
+
     // Optional: store additional preferences here if needed for matching
     locationPreference: {
       type: String,

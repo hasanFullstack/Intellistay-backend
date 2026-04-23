@@ -17,6 +17,11 @@ const bookingSchema = new mongoose.Schema(
       ref: "Room",
       required: true,
     },
+    // Per-hostel room number snapshot at booking time
+    roomNumber: {
+      type: Number,
+      required: false,
+    },
     startDate: {
       type: Date,
       required: true,
