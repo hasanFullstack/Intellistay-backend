@@ -52,7 +52,7 @@ export const login = async (req, res) => {
 export const updateProfile = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { name, email, description, image } = req.body;
+    const { name, email, image, phone } = req.body;
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ msg: "User not found" });
@@ -64,7 +64,6 @@ export const updateProfile = async (req, res) => {
     }
 
     if (name) user.name = name;
-    if (description !== undefined) user.description = description;
     if (image !== undefined) {
       // If image looks like a data URL or base64, upload it to CDN and store the resolved URL
       if (typeof image === "string" && image.startsWith("data:")) {
@@ -79,6 +78,7 @@ export const updateProfile = async (req, res) => {
         user.image = image;
       }
     }
+    if (phone !== undefined) user.phone = String(phone).trim();
 
     await user.save();
 

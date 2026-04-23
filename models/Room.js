@@ -7,11 +7,6 @@ const roomSchema = new mongoose.Schema(
       ref: "Hostel",
       required: true,
     },
-    // Per-hostel sequential room number (1,2,3...) assigned on create
-    number: {
-      type: Number,
-      required: false,
-    },
     roomType: {
       type: String,
       enum: ["Single", "Shared", "Deluxe"],
@@ -31,6 +26,10 @@ const roomSchema = new mongoose.Schema(
     },
     images: [String],
     description: String,
+    roomLabel: {
+      type: String,
+      required: true,
+    },
   },
   { timestamps: true },
 );
@@ -39,6 +38,6 @@ roomSchema.index({ hostelId: 1 });
 roomSchema.index({ availableBeds: 1 });
 roomSchema.index({ hostelId: 1, pricePerBed: 1 });
 // Ensure per-hostel room numbers are unique
-roomSchema.index({ hostelId: 1, number: 1 }, { unique: true, sparse: true });
+// NOTE: Per-hostel sequential `number` removed — use `roomLabel` or computed index instead.
 
 export default mongoose.model("Room", roomSchema);

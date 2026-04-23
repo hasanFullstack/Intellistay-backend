@@ -50,11 +50,11 @@ const userSchema = new mongoose.Schema(
     },
 
     // Owner/public profile fields
-    description: {
+    image: {
       type: String,
       default: "",
     },
-    image: {
+    phone: {
       type: String,
       default: "",
     },

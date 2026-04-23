@@ -14,7 +14,7 @@ import { resolveImageUrls } from "../utils/cdnUpload.js";
 export const addRoom = async (req, res) => {
   try {
     const { hostelId } = req.params;
-    const { roomType, totalBeds, pricePerBed, images, description } =
+    const { roomLabel, roomType, totalBeds, pricePerBed, images, description } =
       req.body;
 
     // Verify hostel exists and belongs to user
@@ -30,10 +30,7 @@ export const addRoom = async (req, res) => {
 
     const room = await Room.create({
       hostelId,
-      // assign next available per-hostel room number
-      number: (await Room.findOne({ hostelId }).sort({ number: -1 }).select("number").lean())?.number
-        ? (await Room.findOne({ hostelId }).sort({ number: -1 }).select("number").lean()).number + 1
-        : 1,
+      roomLabel,
       roomType,
       totalBeds,
       availableBeds: totalBeds,
@@ -54,10 +51,10 @@ export const getRoomsByHostel = async (req, res) => {
     const rooms = await Room.find({ hostelId })
       .select({
         images: { $slice: 1 },
+        roomLabel: 1,
         roomType: 1,
         totalBeds: 1,
         availableBeds: 1,
-        number: 1,
         pricePerBed: 1,
         description: 1,
       })
@@ -194,11 +191,11 @@ export const getAllRooms = async (req, res) => {
     pipeline.push(
       { $sort: { createdAt: -1 } },
       {
-        $project: {
+          $project: {
+          roomLabel: 1,
           roomType: 1,
           totalBeds: 1,
           availableBeds: 1,
-          number: 1,
           pricePerBed: 1,
           description: 1,
           images: { $slice: ["$images", 1] },
@@ -267,13 +264,32 @@ export const updateRoom = async (req, res) => {
       return res.status(403).json({ msg: "Unauthorized" });
     }
 
-    const updatePayload = { ...req.body };
+    // Only allow updating specific fields: images, price (pricePerBed or price), description
+    const updatePayload = {};
+
+    if (Object.prototype.hasOwnProperty.call(req.body, "description")) {
+      updatePayload.description = req.body.description || "";
+    }
+
+    // Accept either `pricePerBed` (preferred) or `price` as an alias from clients
+    if (Object.prototype.hasOwnProperty.call(req.body, "pricePerBed") || Object.prototype.hasOwnProperty.call(req.body, "price")) {
+      const raw = Object.prototype.hasOwnProperty.call(req.body, "pricePerBed") ? req.body.pricePerBed : req.body.price;
+      const num = Number(raw);
+      if (!Number.isNaN(num)) {
+        updatePayload.pricePerBed = num;
+      }
+    }
 
     if (Object.prototype.hasOwnProperty.call(req.body, "images")) {
       updatePayload.images = await resolveImageUrls(
         req.body.images,
         "intellistay/rooms",
       );
+    }
+
+    // If no allowed fields provided, respond with bad request
+    if (Object.keys(updatePayload).length === 0) {
+      return res.status(400).json({ msg: "No updatable fields provided. Allowed: images, pricePerBed (or price), description." });
     }
 
     const updatedRoom = await Room.findByIdAndUpdate(roomId, updatePayload, {
