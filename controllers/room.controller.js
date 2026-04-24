@@ -2,6 +2,7 @@ import Room from "../models/Room.js";
 import Hostel from "../models/Hostel.js";
 import Booking from "../models/Booking.js";
 import User from "../models/Users.js";
+import PersonalityQuiz from "../models/PersonalityQuiz.js";
 import mongoose from "mongoose";
 import { getSuggestedPrice } from "../services/pricing.service.js";
 import {
@@ -349,16 +350,12 @@ export const getRoomOccupants = async (req, res) => {
     const room = await Room.findById(roomId);
     if (!room) return res.status(404).json({ msg: "Room not found" });
 
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-
-    // Active occupants are confirmed bookings that have started.
-    // The Booking schema does not store `endDate`, so filtering by it hides
-    // valid confirmed monthly bookings from the compatibility section.
+    // Include all confirmed bookings for this room. Room availability is already
+    // maintained by booking confirmation/cancellation, and strict date filters
+    // can hide valid occupants when start dates vary.
     const bookings = await Booking.find({
       roomId,
       status: "confirmed",
-      startDate: { $lte: todayEnd },
     }).populate("userId", "name personalityVector personalityScore");
 
     if (!bookings || bookings.length === 0) {
@@ -420,23 +417,61 @@ export const getRoomOccupants = async (req, res) => {
       }
     }
 
-    const currentVector = currentUser?.personalityVector || [];
+    let currentVector = currentUser?.personalityVector || [];
+    if (!Array.isArray(currentVector) || currentVector.length === 0) {
+      const currentQuiz = await PersonalityQuiz.findOne({
+        userId: req.user.id,
+      }).select("personalityVector");
+      currentVector = currentQuiz?.personalityVector || [];
+    }
+
+    // Fallback: if occupant vectors are missing in User doc, pull from
+    // PersonalityQuiz records so compatibility still works for quiz-completed users.
+    const occupantsNeedingQuizFallback = [...byStudent.values()]
+      .filter(
+        (s) =>
+          !Array.isArray(s.personalityVector) || s.personalityVector.length === 0,
+      )
+      .map((s) => s._id);
+
+    const quizFallbackMap = new Map();
+    if (occupantsNeedingQuizFallback.length > 0) {
+      const quizzes = await PersonalityQuiz.find({
+        userId: { $in: occupantsNeedingQuizFallback },
+      }).select("userId personalityVector personalityScore");
+
+      for (const q of quizzes) {
+        quizFallbackMap.set(String(q.userId), {
+          personalityVector: q.personalityVector || [],
+          personalityScore: q.personalityScore,
+        });
+      }
+    }
     const occupants = [];
     let profiledOccupiedBeds = 0;
 
     for (const s of byStudent.values()) {
+      const fallback = quizFallbackMap.get(String(s._id));
+      const occupantVector =
+        Array.isArray(s.personalityVector) && s.personalityVector.length > 0
+          ? s.personalityVector
+          : fallback?.personalityVector || [];
+
       const occupant = {
         _id: s._id,
         name: s.name,
-        personalityScore: s.personalityScore,
+        personalityScore:
+          Number.isFinite(s.personalityScore) && s.personalityScore > 0
+            ? s.personalityScore
+            : fallback?.personalityScore,
         bedsBooked: s.bedsBooked,
         bedNumbers: Array.from(new Set(s.bedNumbers)).sort((a, b) => a - b),
       };
 
-      if (currentVector.length > 0 && s.personalityVector?.length > 0) {
+      if (currentVector.length > 0 && occupantVector.length > 0) {
         const { score, breakdown } = calculateCompatibilityScore(
           currentVector,
-          s.personalityVector,
+          occupantVector,
         );
         occupant.similarityScore = score;
         occupant.matchLabel = getMatchLabel(score);
