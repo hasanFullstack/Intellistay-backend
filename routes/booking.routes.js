@@ -4,6 +4,7 @@ import {
   getUserBookings,
   getBookingById,
   cancelBooking,
+  completeBooking,
   getOwnerBookings,
   acceptBooking,
   rejectBooking,
@@ -17,6 +18,7 @@ router.post("/", protect, allowRoles("student"), createBooking);
 router.get("/my", protect, allowRoles("student"), getUserBookings);
 router.get("/:id", protect, getBookingById);
 router.put("/:id/cancel", protect, allowRoles("student"), cancelBooking);
+router.put("/:id/complete", protect, allowRoles("student"), completeBooking);
 
 // Owner routes
 router.get("/owner/all", protect, allowRoles("owner"), getOwnerBookings);

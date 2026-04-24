@@ -162,6 +162,48 @@ export const cancelBooking = async (req, res) => {
   }
 };
 
+export const completeBooking = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+
+    if (!booking) {
+      return res.status(404).json({ msg: "Booking not found" });
+    }
+
+    if (String(booking.userId) !== String(req.user.id)) {
+      return res.status(403).json({ msg: "Unauthorized" });
+    }
+
+    if (booking.status === "completed") {
+      return res.status(400).json({ msg: "Booking already completed" });
+    }
+
+    if (booking.status === "cancelled") {
+      return res.status(400).json({ msg: "Cannot complete a cancelled booking" });
+    }
+
+    // Mark completed and restore room availability
+    try {
+      const room = await Room.findById(booking.roomId);
+      if (room) {
+        room.availableBeds += booking.bedsBooked;
+        await room.save();
+      }
+    } catch (e) {
+      // log but proceed to mark completed
+      console.warn("Failed to restore room availability on complete:", e && e.message ? e.message : e);
+    }
+
+    booking.status = "completed";
+    booking.bedNumbers = [];
+    await booking.save();
+
+    res.json(booking);
+  } catch (error) {
+    res.status(500).json({ msg: error.message });
+  }
+};
+
 // Get bookings for owner's hostels
 export const getOwnerBookings = async (req, res) => {
   try {
