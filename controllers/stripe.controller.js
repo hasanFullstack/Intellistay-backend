@@ -104,18 +104,21 @@ export const handleStripeWebhook = async (req, res) => {
           );
         }
 
-        // Build email content — resolve Room and Hostel names to avoid showing raw IDs
+        // Build email content — resolve Room and Hostel names and room label to avoid showing raw IDs
         let roomName = metadata.roomName || "-";
         let hostelName = metadata.hostelName || "-";
+        let roomLabel = metadata.roomLabel || "-";
         try {
           if (metadata.roomId) {
             const roomDoc = await Room.findById(metadata.roomId)
               .populate("hostelId", "name")
+              .select("name roomLabel hostelId")
               .lean();
             if (roomDoc) {
               roomName = roomDoc.name || String(roomDoc._id);
               if (roomDoc.hostelId && roomDoc.hostelId.name)
                 hostelName = roomDoc.hostelId.name;
+              if (roomDoc.roomLabel) roomLabel = roomDoc.roomLabel;
             }
           } else if (metadata.hostelId) {
             const hostDoc = await Hostel.findById(metadata.hostelId)
@@ -130,6 +133,56 @@ export const handleStripeWebhook = async (req, res) => {
           );
         }
 
+        // Resolve owner contact info for customer-facing email (populate with fallbacks)
+        let ownerName = "-";
+        let ownerEmail = "-";
+        let ownerPhone = "-";
+        try {
+          // Prefer explicit hostelId in metadata; otherwise try to derive it from roomId
+          let resolvedHostelId = metadata.hostelId || null;
+          if (!resolvedHostelId && metadata.roomId) {
+            try {
+              const roomForHostel = await Room.findById(metadata.roomId).select("hostelId").lean();
+              if (roomForHostel && roomForHostel.hostelId) resolvedHostelId = roomForHostel.hostelId;
+            } catch (e) {
+              // ignore and continue — we'll attempt lookup only if we have an id
+            }
+          }
+
+          if (resolvedHostelId) {
+            // Try populating owner in one query first
+            const hostelDoc = await Hostel.findById(resolvedHostelId)
+              .populate("ownerId", "name email phone")
+              .select("ownerId")
+              .lean();
+
+            // If populate returned an object, use its fields
+            if (hostelDoc && hostelDoc.ownerId) {
+              const owner = hostelDoc.ownerId;
+              if (typeof owner === "object") {
+                ownerName = owner.name || ownerName;
+                ownerEmail = owner.email || ownerEmail;
+                ownerPhone = owner.phone || ownerPhone;
+              } else if (typeof owner === "string") {
+                // Fallback: ownerId is an id string — fetch user directly
+                const ownerDoc = await User.findById(owner)
+                  .select("name email phone")
+                  .lean();
+                if (ownerDoc) {
+                  ownerName = ownerDoc.name || ownerName;
+                  ownerEmail = ownerDoc.email || ownerEmail;
+                  ownerPhone = ownerDoc.phone || ownerPhone;
+                }
+              }
+            }
+          }
+        } catch (ownerErr) {
+          console.warn(
+            "Could not resolve owner contact info:",
+            ownerErr && ownerErr.message ? ownerErr.message : ownerErr,
+          );
+        }
+
         const beds =
           parseInt(
             metadata.bedsBooked || metadata.beds || session.beds || 1,
@@ -138,8 +191,8 @@ export const handleStripeWebhook = async (req, res) => {
 
         const roomDetailsHtml = `
           <h3>Booking Details</h3>
-          <p><strong>Room:</strong> ${roomName}</p>
           <p><strong>Hostel:</strong> ${hostelName}</p>
+          <p><strong>Room Number:</strong> ${roomLabel}</p>
           <p><strong>Type:</strong> ${metadata.roomType || "-"}</p>
           <p><strong>Price per bed:</strong> ${metadata.pricePerBed || "-"} ${currency.toUpperCase()}</p>
           <p><strong>Beds:</strong> ${beds}</p>
@@ -181,14 +234,18 @@ export const handleStripeWebhook = async (req, res) => {
             <h2>Booking Confirmed ✓</h2>
             <p>Thank you for your payment! Your booking has been successfully confirmed.</p>
             <h3>Booking Details</h3>
-            <p><strong>Room:</strong> ${roomName}</p>
             <p><strong>Hostel:</strong> ${hostelName}</p>
-            <p><strong>Type:</strong> ${metadata.roomType || "-"}</p>
+            <p><strong>Room Number:</strong> ${roomLabel}</p>
+            <p><strong>Room Type:</strong> ${metadata.roomType || "-"}</p>
             <p><strong>Number of Beds:</strong> ${beds}</p>
             <p><strong>Price per Bed:</strong> ${metadata.pricePerBed || "-"} ${currency.toUpperCase()}</p>
             <p><strong>Check-in Date:</strong> ${metadata.startDate || "-"}</p>
             <p style="font-weight: bold; margin-top: 15px;"><strong>Total Amount Paid:</strong> ${amount ? (amount / 100).toFixed(2) + " " + currency.toUpperCase() : "-"}</p>
-            <p style="margin-top: 20px; color: #666;">If you have any questions about your booking, please contact us at ${process.env.ADMIN_EMAIL || "support"}.</p>
+            <h4 style="margin-top:18px;">Hostel owner contact</h4>
+            <p><strong>Name:</strong> ${ownerName}</p>
+            <p><strong>Email:</strong> ${ownerEmail}</p>
+            <p><strong>Phone:</strong> ${ownerPhone}</p>
+            <p style="margin-top: 10px; color: #666;">If you have any other questions about your booking, please contact us at ${process.env.ADMIN_EMAIL || "support"}.</p>
           `;
           await transporter.sendMail({
             from: process.env.FROM_EMAIL || process.env.SMTP_USER,

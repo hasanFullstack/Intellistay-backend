@@ -406,6 +406,20 @@ export const finalizeBooking = async (req, res) => {
       stripeSessionId: sessionId,
     });
 
+    // Resolve room label for emails (try metadata first, then DB by roomId)
+    let roomLabel = (session.metadata && session.metadata.roomLabel) || "-";
+    try {
+      if (session.metadata && session.metadata.roomId) {
+        const roomDoc = await Room.findById(session.metadata.roomId).select("roomLabel").lean();
+        if (roomDoc && roomDoc.roomLabel) roomLabel = roomDoc.roomLabel;
+      } else if (roomId) {
+        const roomDoc = await Room.findById(roomId).select("roomLabel").lean();
+        if (roomDoc && roomDoc.roomLabel) roomLabel = roomDoc.roomLabel;
+      }
+    } catch (e) {
+      console.warn("Could not resolve room label for owner email:", e && e.message ? e.message : e);
+    }
+
     // Notify hostel owner about the new booking (fallback path)
     try {
       const ownerHostelId = session.metadata?.hostelId;
@@ -426,10 +440,12 @@ export const finalizeBooking = async (req, res) => {
                 <p>You have received a new booking for your hostel.</p>
                 <p><strong>Hostel:</strong> ${ownerHostel.name || "-"}</p>
                 <p><strong>Room type:</strong> ${session.metadata?.roomType || "-"}</p>
+                <p><strong>Room Number:</strong> ${roomLabel}</p>
+                <p><strong>Customer name:</strong> ${session.customer_details?.name || "-"}</p>
+                <p><strong>Customer email:</strong> ${session.customer_details?.email || session.customer_email || "-"}</p>
                 <p><strong>Beds booked:</strong> ${bedsBooked}</p>
                 <p><strong>Check-in date:</strong> ${startDate}</p>
                 <p><strong>Total:</strong> ${session.amount_total ? (session.amount_total / 100).toFixed(2) + " " + (session.currency || "pkr").toUpperCase() : "-"}</p>
-                <p><strong>Stripe session:</strong> ${sessionId}</p>
               `,
             });
             console.log("Hostel owner email sent to", ownerUser.email);
@@ -442,6 +458,67 @@ export const finalizeBooking = async (req, res) => {
         ownerEmailErr.message || ownerEmailErr,
       );
     }
+
+      // Capture owner contact info for customer confirmation email
+      let ownerName = "-";
+      let ownerEmail = "-";
+      let ownerPhone = "-";
+      let hostelName = "-";
+      try {
+        const ownerHostelId = session.metadata?.hostelId;
+        if (ownerHostelId) {
+          const ownerHostel = await Hostel.findById(ownerHostelId).lean();
+          if (ownerHostel) hostelName = ownerHostel.name || hostelName;
+          if (ownerHostel?.ownerId) {
+            const ownerUser = await User.findById(ownerHostel.ownerId)
+              .select("email name phone")
+              .lean();
+
+            if (ownerUser) {
+              ownerName = ownerUser.name || ownerName;
+              ownerEmail = ownerUser.email || ownerEmail;
+              ownerPhone = ownerUser.phone || ownerPhone;
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Failed to retrieve owner contact info:", err);
+      }
+
+      // Send customer confirmation email in fallback path (so students always receive owner contact)
+      try {
+        const customerEmail = session.customer_details?.email || session.customer_email || null;
+        if (customerEmail) {
+          const amountStr = session.amount_total ? (session.amount_total / 100).toFixed(2) + " " + (session.currency || "pkr").toUpperCase() : "-";
+          const customerHtml = `
+            <h2>Booking Confirmed ✓</h2>
+            <p>Thank you for your payment! Your booking has been successfully confirmed.</p>
+            <h3>Booking Details</h3>
+            <p><strong>Hostel:</strong> ${hostelName}</p>
+            <p><strong>Room Number:</strong> ${roomLabel}</p>
+            <p><strong>Room Type:</strong> ${session.metadata?.roomType || "-"}</p>
+            <p><strong>Number of Beds:</strong> ${bedsBooked}</p>
+            <p><strong>Price per Bed:</strong> ${session.metadata?.pricePerBed || "-"} ${(session.currency || "pkr").toUpperCase()}</p>
+            <p><strong>Check-in Date:</strong> ${session.metadata?.startDate || startDate || "-"}</p>
+            <p style="font-weight: bold; margin-top: 15px;"><strong>Total Amount Paid:</strong> ${amountStr}</p>
+            <h4 style="margin-top:18px;">Hostel owner contact</h4>
+            <p><strong>Name:</strong> ${ownerName}</p>
+            <p><strong>Email:</strong> ${ownerEmail}</p>
+            <p><strong>Phone:</strong> ${ownerPhone}</p>
+            <p style="margin-top: 10px; color: #666;">If you have any other questions about your booking, please contact us at ${process.env.ADMIN_EMAIL || "support"}.</p>
+          `;
+
+          await mailTransporter.sendMail({
+            from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+            to: customerEmail,
+            subject: `Booking confirmed — ${process.env.APP_NAME || "Your Booking"}`,
+            html: customerHtml,
+          });
+          console.log("Customer email sent to", customerEmail);
+        }
+      } catch (custErr) {
+        console.error("Failed to send customer confirmation email (fallback):", custErr && custErr.message ? custErr.message : custErr);
+      }
 
     await Room.findByIdAndUpdate(
       roomId,
