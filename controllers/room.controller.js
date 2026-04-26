@@ -89,6 +89,7 @@ export const getAllRooms = async (req, res) => {
         {},
         {
           images: { $slice: 1 },
+          roomLabel: 1,
           roomType: 1,
           totalBeds: 1,
           availableBeds: 1,
