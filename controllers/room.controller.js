@@ -287,9 +287,14 @@ export const updateRoom = async (req, res) => {
       );
     }
 
+    // Allow marking that AI suggestion has been applied so AI can stop suggesting
+    if (Object.prototype.hasOwnProperty.call(req.body, "aiApplied")) {
+      updatePayload.aiApplied = Boolean(req.body.aiApplied);
+    }
+
     // If no allowed fields provided, respond with bad request
     if (Object.keys(updatePayload).length === 0) {
-      return res.status(400).json({ msg: "No updatable fields provided. Allowed: images, pricePerBed (or price), description." });
+      return res.status(400).json({ msg: "No updatable fields provided. Allowed: images, pricePerBed (or price), description, aiApplied." });
     }
 
     const updatedRoom = await Room.findByIdAndUpdate(roomId, updatePayload, {
@@ -333,6 +338,13 @@ export const getRoomSuggestedPrice = async (req, res) => {
     // Ensure only the owner can request the price
     if (String(hostel.ownerId) !== String(req.user.id)) {
       return res.status(403).json({ msg: "Unauthorized" });
+    }
+
+    // If the owner has explicitly applied an AI suggestion for this room,
+    // do not call the AI service again — return the saved price as the
+    // suggested/fallback value.
+    if (room.aiApplied) {
+      return res.json({ suggested_price: room.pricePerBed, price: room.pricePerBed, source: "fallback" });
     }
 
     const result = await getSuggestedPrice(room, hostel);

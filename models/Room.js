@@ -24,6 +24,12 @@ const roomSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    // When true, owner has accepted an AI suggested price and AI should not
+    // provide further live suggestions for this room unless manually reset.
+    aiApplied: {
+      type: Boolean,
+      default: false,
+    },
     images: [String],
     description: String,
     roomLabel: {
