@@ -3,7 +3,10 @@ import HostelEnvironment from "../models/HostelEnvironment.js";
 import Room from "../models/Room.js";
 import Booking from "../models/Booking.js";
 import { protect } from "../middleware/role.middleware.js";
-import { calculateCompatibilityScore } from "../utils/matchingEngine.js";
+import {
+  calculateCompatibilityScore,
+  checkBudgetAlignment,
+} from "../utils/matchingEngine.js";
 import { cosineSimilarity } from "../utils/cosineSimilarity.js";
 import { resolveImageUrls } from "../utils/cdnUpload.js";
 
@@ -165,7 +168,7 @@ export const getAllHostels = async (req, res) => {
       const envs = await HostelEnvironment.find({
         profileCompleted: true,
       })
-        .select("hostelId hostelVector")
+        .select("hostelId hostelVector environmentProfile.budgetTier")
         .populate({
           path: "hostelId",
           select: { images: { $slice: 1 }, name: 1, addressLine1: 1, addressLine2: 1, city: 1, description: 1, amenities: 1, rules: 1, environmentScore: 1, gender: 1, viewCount: 1, createdAt: 1 }
@@ -178,14 +181,28 @@ export const getAllHostels = async (req, res) => {
         .map((env) => {
           const hostelVector =
             env && Array.isArray(env.hostelVector) ? env.hostelVector : [];
-          const { score } = calculateCompatibilityScore(userVector, hostelVector);
+          const { score: personalityMatch } = calculateCompatibilityScore(
+            userVector,
+            hostelVector,
+          );
+          const budgetResult = checkBudgetAlignment(
+            req.user?.budgetPreference,
+            env.environmentProfile?.budgetTier,
+          );
+          const compatibilityScore = Math.min(
+            100,
+            personalityMatch + (budgetResult?.bonus || 0),
+          );
           const hostel = env.hostelId;
-          return { ...hostel, similarityScore: score };
+          return {
+            ...hostel,
+            compatibilityScore,
+            // Keep legacy key for backwards compatibility in existing clients.
+            similarityScore: compatibilityScore,
+          };
         })
-        .filter((h) => h.similarityScore > 0)
-        .sort(
-          (a, b) => (b.similarityScore || 0) - (a.similarityScore || 0),
-        )
+        .filter((h) => h.compatibilityScore > 0)
+        .sort((a, b) => (b.compatibilityScore || 0) - (a.compatibilityScore || 0))
         .slice(skip, skip + limit); // Apply pagination after sorting
 
       return res.json(results);
