@@ -381,42 +381,61 @@ export const createCheckoutSession = async (req, res, next) => {
     // Ensure we never send the user's raw login email to Stripe Checkout session
     if (sessionParams.customer_email) delete sessionParams.customer_email;
 
+    // --- Stripe Connect destination charge (owner payout) ---
+    // If the hostel owner has a Stripe Connect account ID (acct_xxx), route
+    // funds directly to their account while the platform keeps the service fee.
+    // The session is ALWAYS created on the PLATFORM Stripe so the platform
+    // webhook fires reliably for every payment.
+    // If the owner has no Connect account, all funds stay on the platform.
+    try {
+      if (room && room.hostelId && room.hostelId.ownerId) {
+        const owner = await User.findById(room.hostelId.ownerId).select("stripe");
+        const ownerAccountId = owner && owner.stripe && owner.stripe.accountId
+          ? String(owner.stripe.accountId).trim()
+          : "";
+
+        if (ownerAccountId && /^acct_/.test(ownerAccountId)) {
+          // Calculate the platform application fee = service fee only (in paisa).
+          // Everything else (room price, admission fee, security fee) goes to owner.
+          const serviceFeeAmt = sessionMetadata && sessionMetadata.serviceFee
+            ? Math.round(Number(sessionMetadata.serviceFee) * 100)
+            : 0;
+
+          sessionParams.payment_intent_data = {
+            application_fee_amount: serviceFeeAmt,
+            transfer_data: {
+              destination: ownerAccountId,
+            },
+          };
+
+          // Store the Connect account ID in metadata for reference
+          if (sessionParams.metadata) {
+            sessionParams.metadata.ownerStripeAccountId = ownerAccountId;
+          }
+
+          console.log(
+            `Destination charge: funds → ${ownerAccountId}, platform fee = ${serviceFeeAmt} paisa`,
+          );
+        }
+      }
+    } catch (connectErr) {
+      // Non-blocking: if Connect lookup fails, fall back to platform-only payment
+      console.warn(
+        "Connect account lookup failed, falling back to platform-only:",
+        connectErr.message || connectErr,
+      );
+    }
+
     let session;
     try {
-      // If the room belongs to an owner who added their Stripe secret key,
-      // create the Checkout Session using the owner's key so funds go to them.
-      let stripeClient = stripe;
-      try {
-        if (room && room.hostelId && room.hostelId.ownerId) {
-          const owner = await User.findById(room.hostelId.ownerId).select(
-            "stripe",
-          );
-          if (owner && owner.stripe && owner.stripe.secretKey) {
-            try {
-              stripeClient = new Stripe(owner.stripe.secretKey);
-            } catch (e) {
-              console.warn(
-                "Invalid owner Stripe secret, falling back to platform key",
-                e.message || e,
-              );
-              stripeClient = stripe;
-            }
-          }
-        }
-      } catch (lookupErr) {
-        console.warn(
-          "Owner Stripe lookup failed",
-          lookupErr.message || lookupErr,
-        );
-      }
-
-      if (!stripeClient) {
+      // Always create on PLATFORM Stripe — guarantees webhook fires every time.
+      if (!stripe) {
         return res
           .status(500)
           .json({ message: "Stripe is not configured on the server" });
       }
 
-      session = await stripeClient.checkout.sessions.create(sessionParams);
+      session = await stripe.checkout.sessions.create(sessionParams);
     } catch (stripeErr) {
       const status = stripeErr.statusCode || 400;
       const body = {
@@ -449,7 +468,7 @@ export const finalizeBooking = async (req, res) => {
     }
 
     // Idempotency: return existing booking if webhook already created it
-    const existing = await Booking.findOne({ stripeSessionId: sessionId });
+    const existing = await Booking.findOne({ stripeSessionId: sessionId }).populate("hostelId", "name");
     if (existing) {
       console.log("Booking already exists for session", sessionId, "(webhook already fired)");
       return res.json({ success: true, booking: existing, source: "webhook" });
@@ -664,11 +683,12 @@ export const finalizeBooking = async (req, res) => {
 
     console.log("Booking finalized (fallback, webhook didn't fire):", booking._id);
 
+    await booking.populate("hostelId", "name");
     res.json({ success: true, booking, source: "fallback" });
   } catch (err) {
     // Duplicate key means webhook created it between our check and create — return it
     if (err.code === 11000) {
-      const booking = await Booking.findOne({ stripeSessionId: req.body.sessionId });
+      const booking = await Booking.findOne({ stripeSessionId: req.body.sessionId }).populate("hostelId", "name");
       if (booking) return res.json({ success: true, booking, source: "webhook" });
     }
     console.error("Error finalizing booking:", err);
@@ -679,7 +699,7 @@ export const finalizeBooking = async (req, res) => {
 export const getBookingBySession = async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const booking = await Booking.findOne({ stripeSessionId: sessionId });
+    const booking = await Booking.findOne({ stripeSessionId: sessionId }).populate("hostelId", "name");
     if (!booking) {
       return res.status(404).json({ found: false });
     }

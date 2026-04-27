@@ -1,18 +1,21 @@
 import express from "express";
 import {
-  saveStripeKeys,
-  getStripeKeys,
-  deleteStripeKeys,
+  startConnectOnboarding,
+  getConnectStatus,
+  createStripeDashboardLink,
+  disconnectStripe,
 } from "../controllers/ownerStripe.controller.js";
 import { protect, ownerOnly } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// Save/update stripe keys (owner only)
-router.post("/", protect, ownerOnly, saveStripeKeys);
-// Get stripe keys (masked)
-router.get("/", protect, ownerOnly, getStripeKeys);
-// Delete stripe keys
-router.delete("/", protect, ownerOnly, deleteStripeKeys);
+// Start Stripe Connect Express onboarding — returns a hosted onboarding URL
+router.post("/connect/onboard", protect, ownerOnly, startConnectOnboarding);
+// Get current Connect account status
+router.get("/connect/status", protect, ownerOnly, getConnectStatus);
+// Open Stripe Express dashboard for the connected owner
+router.post("/connect/dashboard-link", protect, ownerOnly, createStripeDashboardLink);
+// Disconnect Stripe Connect account
+router.delete("/connect", protect, ownerOnly, disconnectStripe);
 
 export default router;
