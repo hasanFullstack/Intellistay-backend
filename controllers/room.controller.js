@@ -58,6 +58,7 @@ export const getRoomsByHostel = async (req, res) => {
         availableBeds: 1,
         pricePerBed: 1,
         description: 1,
+        aiApplied: 1,
       })
       .lean();
     res.json(rooms);

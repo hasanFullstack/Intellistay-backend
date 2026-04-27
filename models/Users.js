@@ -89,6 +89,11 @@ const userSchema = new mongoose.Schema(
       secretKey: { type: String, default: "" },
       accountId: { type: String, default: "" },
     },
+    // Wallet/balance for platform payouts and admin/owner admission fee tracking
+    balance: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true },
 );

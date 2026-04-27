@@ -1,6 +1,18 @@
+import Stripe from "stripe";
 import Hostel from "../models/Hostel.js";
 import Room from "../models/Room.js";
 import Booking from "../models/Booking.js";
+import User from "../models/Users.js";
+
+let stripe = null;
+if (process.env.STRIPE_SECRET) {
+  try {
+    stripe = new Stripe(process.env.STRIPE_SECRET);
+  } catch (e) {
+    console.warn("Failed to initialize Stripe in booking.controller:", e.message || e);
+    stripe = null;
+  }
+}
 
 const getActiveRoomBookings = async (roomId, excludeBookingId = null) => {
   const query = {
@@ -318,5 +330,114 @@ export const rejectBooking = async (req, res) => {
     res.json(booking);
   } catch (error) {
     res.status(500).json({ msg: error.message });
+  }
+};
+
+// Owner can mark security fee as held or refunded
+export const updateSecurityFeeStatus = async (req, res) => {
+  try {
+    const { action } = req.body;
+    const normalizedAction = String(action || "").toLowerCase();
+
+    if (!["hold", "refund"].includes(normalizedAction)) {
+      return res.status(400).json({ msg: "Action must be 'hold' or 'refund'" });
+    }
+
+    const booking = await Booking.findById(req.params.id).populate("hostelId");
+    if (!booking) {
+      return res.status(404).json({ msg: "Booking not found" });
+    }
+
+    if (String(booking.hostelId?.ownerId) !== String(req.user.id)) {
+      return res.status(403).json({ msg: "Unauthorized" });
+    }
+
+    if (Number(booking.securityFee || 0) <= 0) {
+      return res.status(400).json({ msg: "This booking has no security fee" });
+    }
+
+    if (normalizedAction === "refund") {
+      if (booking.securityFeeStatus === "refunded") {
+        return res.status(400).json({ msg: "Security fee already refunded" });
+      }
+
+      if (!booking.stripeSessionId) {
+        return res.status(400).json({ msg: "Stripe session not found for this booking" });
+      }
+
+      const refundAmount = Math.round(Number(booking.securityFee || 0) * 100);
+      if (refundAmount <= 0) {
+        return res.status(400).json({ msg: "Invalid security fee amount" });
+      }
+
+      // Build Stripe clients list: platform first, then owner key fallback.
+      const stripeClients = [];
+      if (stripe) stripeClients.push(stripe);
+
+      try {
+        const ownerId = booking.hostelId?.ownerId;
+        if (ownerId) {
+          const owner = await User.findById(ownerId).select("stripe").lean();
+          const ownerSecret = owner?.stripe?.secretKey;
+          if (ownerSecret) {
+            try {
+              stripeClients.push(new Stripe(ownerSecret));
+            } catch (e) {
+              console.warn("Invalid owner Stripe secret in refund flow:", e.message || e);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Owner Stripe lookup failed in refund flow:", e.message || e);
+      }
+
+      if (stripeClients.length === 0) {
+        return res.status(500).json({ msg: "Stripe is not configured for refunds" });
+      }
+
+      let refunded = false;
+      let lastErr = null;
+
+      for (const client of stripeClients) {
+        try {
+          const session = await client.checkout.sessions.retrieve(booking.stripeSessionId);
+          const paymentIntent = session?.payment_intent;
+          if (!paymentIntent) {
+            lastErr = new Error("Payment intent not found for Stripe session");
+            continue;
+          }
+
+          await client.refunds.create({
+            payment_intent: paymentIntent,
+            amount: refundAmount,
+            reason: "requested_by_customer",
+            metadata: {
+              bookingId: String(booking._id),
+              refundType: "security_fee",
+            },
+          });
+
+          refunded = true;
+          break;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+
+      if (!refunded) {
+        return res.status(500).json({ msg: lastErr?.message || "Failed to process Stripe refund" });
+      }
+
+      booking.securityFeeStatus = "refunded";
+      booking.securityFeeRefundedAt = new Date();
+    } else {
+      booking.securityFeeStatus = "held";
+      booking.securityFeeRefundedAt = null;
+    }
+
+    await booking.save();
+    return res.json(booking);
+  } catch (error) {
+    return res.status(500).json({ msg: error.message });
   }
 };

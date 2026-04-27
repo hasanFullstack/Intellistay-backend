@@ -5,6 +5,9 @@ import Room from "../models/Room.js";
 import Hostel from "../models/Hostel.js";
 import User from "../models/Users.js";
 import Booking from "../models/Booking.js";
+import { getStudentBookingEmail } from "../emails/studentBookingEmail.js";
+import { getOwnerBookingEmail } from "../emails/ownerBookingEmail.js";
+import { getAdminBookingEmail } from "../emails/adminBookingEmail.js";
 
 let stripe = null;
 if (process.env.STRIPE_SECRET) {
@@ -222,6 +225,69 @@ export const createCheckoutSession = async (req, res, next) => {
         bedsBooked: String(bedsBooked || quantity || 1),
         userId: req.user ? req.user.id : "",
       };
+
+      // If the current user is a student, include a one-time admission fee
+      // plus a service fee. New split: service fee Rs1000 to platform (admin),
+      // admission fee Rs2000 to hostel owner.
+      try {
+        if (req.user && String(req.user.role) === "student") {
+          const serviceAmount = 1000; // PKR
+          const admissionAmount = 2000; // PKR
+          const bedsQty = parseInt(quantity, 10) || 1;
+          const securityPerBed = Number(room.pricePerBed || 0);
+          const securityAmount = securityPerBed * bedsQty; // PKR
+
+          // Service fee (platform)
+          line_items.push({
+            price_data: {
+              currency,
+              product_data: {
+                name: "Service fee",
+                description: "Platform service fee",
+              },
+              unit_amount: Math.round(serviceAmount * 100),
+            },
+            quantity: 1,
+          });
+
+          // Admission fee (one-time) for hostel
+          line_items.push({
+            price_data: {
+              currency,
+              product_data: {
+                name: "Admission fee (one-time)",
+                description: "One-time admission/registration fee",
+              },
+              unit_amount: Math.round(admissionAmount * 100),
+            },
+            quantity: 1,
+          });
+
+          // Security fee (typically refundable) based on per-bed price
+          line_items.push({
+            price_data: {
+              currency,
+              product_data: {
+                name: "Security fee",
+                description: "Security deposit charged at checkout",
+              },
+              unit_amount: Math.round(securityPerBed * 100),
+            },
+            quantity: bedsQty,
+          });
+
+          // annotate metadata so we can split after payment
+          sessionMetadata.serviceFee = String(serviceAmount);
+          sessionMetadata.serviceAdmin = String(serviceAmount);
+          sessionMetadata.admissionFee = String(admissionAmount);
+          sessionMetadata.admissionOwner = String(admissionAmount);
+          sessionMetadata.securityFee = String(securityAmount);
+          sessionMetadata.securityPerBed = String(securityPerBed);
+        }
+      } catch (e) {
+        // non-blocking
+        console.warn("Failed to append fee metadata:", e && e.message ? e.message : e);
+      }
     } else if (items && items.length) {
       line_items = items.map((it) => ({
         price_data: {
@@ -403,6 +469,19 @@ export const finalizeBooking = async (req, res) => {
       bedsBooked: parseInt(bedsBooked, 10),
       totalPrice: session.amount_total / 100,
       status: "confirmed",
+      admissionFee: session.metadata?.admissionFee ? Number(session.metadata.admissionFee) : 0,
+      admissionSplit: {
+        owner: session.metadata?.admissionOwner ? Number(session.metadata.admissionOwner) : 0,
+      },
+      serviceFee: session.metadata?.serviceFee ? Number(session.metadata.serviceFee) : 0,
+      serviceSplit: {
+        admin: session.metadata?.serviceAdmin ? Number(session.metadata.serviceAdmin) : 0,
+      },
+      securityFee: session.metadata?.securityFee ? Number(session.metadata.securityFee) : 0,
+      securityFeeStatus:
+        session.metadata?.securityFee && Number(session.metadata.securityFee) > 0
+          ? "held"
+          : "not_applicable",
       stripeSessionId: sessionId,
     });
 
@@ -420,44 +499,7 @@ export const finalizeBooking = async (req, res) => {
       console.warn("Could not resolve room label for owner email:", e && e.message ? e.message : e);
     }
 
-    // Notify hostel owner about the new booking (fallback path)
-    try {
-      const ownerHostelId = session.metadata?.hostelId;
-      if (ownerHostelId) {
-        const ownerHostel = await Hostel.findById(ownerHostelId).lean();
-        if (ownerHostel?.ownerId) {
-          const ownerUser = await User.findById(ownerHostel.ownerId)
-            .select("email name")
-            .lean();
-
-          if (ownerUser?.email) {
-            await mailTransporter.sendMail({
-              from: process.env.FROM_EMAIL || process.env.SMTP_USER,
-              to: ownerUser.email,
-              subject: `New booking received — ${process.env.APP_NAME || "Intellistay"}`,
-              html: `
-                <p>Hi ${ownerUser.name || "Hostel Owner"},</p>
-                <p>You have received a new booking for your hostel.</p>
-                <p><strong>Hostel:</strong> ${ownerHostel.name || "-"}</p>
-                <p><strong>Room type:</strong> ${session.metadata?.roomType || "-"}</p>
-                <p><strong>Room Number:</strong> ${roomLabel}</p>
-                <p><strong>Customer name:</strong> ${session.customer_details?.name || "-"}</p>
-                <p><strong>Customer email:</strong> ${session.customer_details?.email || session.customer_email || "-"}</p>
-                <p><strong>Beds booked:</strong> ${bedsBooked}</p>
-                <p><strong>Check-in date:</strong> ${startDate}</p>
-                <p><strong>Total:</strong> ${session.amount_total ? (session.amount_total / 100).toFixed(2) + " " + (session.currency || "pkr").toUpperCase() : "-"}</p>
-              `,
-            });
-            console.log("Hostel owner email sent to", ownerUser.email);
-          }
-        }
-      }
-    } catch (ownerEmailErr) {
-      console.error(
-        "Failed to send hostel owner email (fallback):",
-        ownerEmailErr.message || ownerEmailErr,
-      );
-    }
+    // Note: Owner email will be sent in the unified fee-processing block below
 
       // Capture owner contact info for customer confirmation email
       let ownerName = "-";
@@ -490,23 +532,24 @@ export const finalizeBooking = async (req, res) => {
         const customerEmail = session.customer_details?.email || session.customer_email || null;
         if (customerEmail) {
           const amountStr = session.amount_total ? (session.amount_total / 100).toFixed(2) + " " + (session.currency || "pkr").toUpperCase() : "-";
-          const customerHtml = `
-            <h2>Booking Confirmed ✓</h2>
-            <p>Thank you for your payment! Your booking has been successfully confirmed.</p>
-            <h3>Booking Details</h3>
-            <p><strong>Hostel:</strong> ${hostelName}</p>
-            <p><strong>Room Number:</strong> ${roomLabel}</p>
-            <p><strong>Room Type:</strong> ${session.metadata?.roomType || "-"}</p>
-            <p><strong>Number of Beds:</strong> ${bedsBooked}</p>
-            <p><strong>Price per Bed:</strong> ${session.metadata?.pricePerBed || "-"} ${(session.currency || "pkr").toUpperCase()}</p>
-            <p><strong>Check-in Date:</strong> ${session.metadata?.startDate || startDate || "-"}</p>
-            <p style="font-weight: bold; margin-top: 15px;"><strong>Total Amount Paid:</strong> ${amountStr}</p>
-            <h4 style="margin-top:18px;">Hostel owner contact</h4>
-            <p><strong>Name:</strong> ${ownerName}</p>
-            <p><strong>Email:</strong> ${ownerEmail}</p>
-            <p><strong>Phone:</strong> ${ownerPhone}</p>
-            <p style="margin-top: 10px; color: #666;">If you have any other questions about your booking, please contact us at ${process.env.ADMIN_EMAIL || "support"}.</p>
-          `;
+          const customerHtml = getStudentBookingEmail({
+            hostelName,
+            roomLabel,
+            metadata: {
+              ...(session.metadata || {}),
+              startDate: session.metadata?.startDate || startDate || "-",
+            },
+            beds: parseInt(bedsBooked, 10) || 1,
+            currency: session.currency || "pkr",
+            admissionFee: Number(session.metadata?.admissionFee || 0),
+            securityFee: Number(session.metadata?.securityFee || 0),
+            serviceFee: Number(session.metadata?.serviceFee || 0),
+            amount: session.amount_total,
+            ownerName,
+            ownerEmail,
+            ownerPhone,
+            supportEmail: process.env.ADMIN_EMAIL || "support",
+          });
 
           await mailTransporter.sendMail({
             from: process.env.FROM_EMAIL || process.env.SMTP_USER,
@@ -525,6 +568,99 @@ export const finalizeBooking = async (req, res) => {
       { $inc: { availableBeds: -parseInt(bedsBooked, 10) } },
       { new: true }
     );
+
+      // If service/admission fees were present, credit admin (service)
+      // and owner (admission) balances and send emails
+      try {
+        const serviceFee = session.metadata?.serviceFee ? Number(session.metadata.serviceFee) : 0;
+        const serviceAdminAmt = session.metadata?.serviceAdmin ? Number(session.metadata.serviceAdmin) : 0;
+        const admissionFee = session.metadata?.admissionFee ? Number(session.metadata.admissionFee) : 0;
+        const admissionOwnerAmt = session.metadata?.admissionOwner ? Number(session.metadata.admissionOwner) : 0;
+        const securityFee = session.metadata?.securityFee ? Number(session.metadata.securityFee) : 0;
+
+        // Credit admin with service fee
+        if (serviceFee > 0 && serviceAdminAmt > 0) {
+          try {
+            let adminUser = null;
+            if (process.env.ADMIN_EMAIL) adminUser = await User.findOne({ email: process.env.ADMIN_EMAIL });
+            if (!adminUser) adminUser = await User.findOne({ role: 'admin' });
+            if (adminUser) {
+              adminUser.balance = (adminUser.balance || 0) + serviceAdminAmt;
+              await adminUser.save();
+
+              if (adminUser.email) {
+                const adminHtml = getAdminBookingEmail({
+                  hostelName: hostelName || '-',
+                  metadata: {
+                    ...(session.metadata || {}),
+                    startDate: session.metadata?.startDate || startDate || '-',
+                  },
+                  roomLabel: roomLabel || '-',
+                  beds: parseInt(bedsBooked, 10) || 1,
+                  serviceFee,
+                  admissionFee,
+                  securityFee,
+                  serviceAdminAmt,
+                });
+                await mailTransporter.sendMail({
+                  from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+                  to: adminUser.email,
+                  subject: `Booking received & service fee credited — ${process.env.APP_NAME || 'Intellistay'}`,
+                  html: adminHtml,
+                });
+              }
+            }
+          } catch (e) {
+            console.error('Failed to credit admin or send admin email:', e && e.message ? e.message : e);
+          }
+        }
+
+        // Credit owner with admission fee
+        if (admissionFee > 0 && admissionOwnerAmt > 0) {
+          try {
+            const ownerHostelId = session.metadata?.hostelId;
+            if (ownerHostelId) {
+              const ownerHostel = await Hostel.findById(ownerHostelId).lean();
+              if (ownerHostel?.ownerId) {
+                const ownerUser = await User.findById(ownerHostel.ownerId).select('email name balance').exec();
+                if (ownerUser) {
+                  ownerUser.balance = (ownerUser.balance || 0) + admissionOwnerAmt;
+                  await ownerUser.save();
+
+                  if (ownerUser.email) {
+                    const ownerHtml = getOwnerBookingEmail({
+                      ownerUser,
+                      ownerHostel,
+                      metadata: {
+                        ...(session.metadata || {}),
+                        startDate: session.metadata?.startDate || startDate || '-',
+                      },
+                      roomLabel,
+                      bedsBooked: parseInt(bedsBooked, 10) || 1,
+                      serviceFee,
+                      admissionFee,
+                      securityFee,
+                      admissionOwnerAmt,
+                      customerName: session.customer_details?.name || '-',
+                      customerEmail: session.customer_details?.email || session.customer_email || '-',
+                    });
+                    await mailTransporter.sendMail({
+                      from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+                      to: ownerUser.email,
+                      subject: `Booking received & fees credited — ${process.env.APP_NAME || 'Intellistay'}`,
+                      html: ownerHtml,
+                    });
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.error('Failed to credit owner or send owner email:', e && e.message ? e.message : e);
+          }
+        }
+      } catch (e) {
+        console.error('Fee processing error:', e && e.message ? e.message : e);
+      }
 
     console.log("Booking finalized (fallback, webhook didn't fire):", booking._id);
 

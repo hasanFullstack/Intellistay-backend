@@ -4,6 +4,9 @@ import Hostel from "../models/Hostel.js";
 import User from "../models/Users.js";
 import Booking from "../models/Booking.js";
 import Room from "../models/Room.js";
+import { getStudentBookingEmail } from "../emails/studentBookingEmail.js";
+import { getOwnerBookingEmail } from "../emails/ownerBookingEmail.js";
+import { getAdminBookingEmail } from "../emails/adminBookingEmail.js";
 
 let stripe = null;
 if (process.env.STRIPE_SECRET) {
@@ -77,6 +80,13 @@ export const handleStripeWebhook = async (req, res) => {
         try {
           const { roomId, hostelId, userId, startDate, bedsBooked } = metadata;
 
+          // Idempotency: don't create duplicate bookings for same Stripe session
+          const existing = await Booking.findOne({ stripeSessionId: session.id });
+          if (existing) {
+            console.log("Booking already exists for session (webhook):", session.id);
+            break;
+          }
+
           if (roomId && hostelId && userId && startDate) {
             const booking = await Booking.create({
               userId,
@@ -86,6 +96,20 @@ export const handleStripeWebhook = async (req, res) => {
               bedsBooked: parseInt(bedsBooked || 1, 10),
               totalPrice: amount / 100, // convert from paisa to currency
               status: "confirmed",
+              admissionFee: metadata?.admissionFee ? Number(metadata.admissionFee) : 0,
+              admissionSplit: {
+                owner: metadata?.admissionOwner ? Number(metadata.admissionOwner) : 0,
+              },
+              serviceFee: metadata?.serviceFee ? Number(metadata.serviceFee) : 0,
+              serviceSplit: {
+                admin: metadata?.serviceAdmin ? Number(metadata.serviceAdmin) : 0,
+              },
+              securityFee: metadata?.securityFee ? Number(metadata.securityFee) : 0,
+              securityFeeStatus:
+                metadata?.securityFee && Number(metadata.securityFee) > 0
+                  ? "held"
+                  : "not_applicable",
+              stripeSessionId: session.id,
             });
 
             // Reduce available beds in the room
@@ -95,7 +119,92 @@ export const handleStripeWebhook = async (req, res) => {
               { new: true },
             );
 
-            console.log("Booking created:", booking._id);
+            console.log("Booking created via webhook:", booking._id);
+
+            // Credit balances and send combined owner/admin emails if fees present
+            try {
+              const serviceFee = metadata?.serviceFee ? Number(metadata.serviceFee) : 0;
+              const serviceAdminAmt = metadata?.serviceAdmin ? Number(metadata.serviceAdmin) : 0;
+              const admissionFee = metadata?.admissionFee ? Number(metadata.admissionFee) : 0;
+              const admissionOwnerAmt = metadata?.admissionOwner ? Number(metadata.admissionOwner) : 0;
+              const securityFee = metadata?.securityFee ? Number(metadata.securityFee) : 0;
+
+              // Credit admin
+              if (serviceFee > 0 && serviceAdminAmt > 0) {
+                try {
+                  let adminUser = null;
+                  if (process.env.ADMIN_EMAIL) adminUser = await User.findOne({ email: process.env.ADMIN_EMAIL });
+                  if (!adminUser) adminUser = await User.findOne({ role: 'admin' });
+                  if (adminUser) {
+                    adminUser.balance = (adminUser.balance || 0) + serviceAdminAmt;
+                    await adminUser.save();
+                    // notify admin about service fee
+                    if (adminUser.email) {
+                      const adminHtml = getAdminBookingEmail({
+                        hostelName: metadata?.hostelName || "-",
+                        metadata,
+                        roomLabel: metadata?.roomLabel || "-",
+                        beds: parseInt(bedsBooked || 1, 10) || 1,
+                        serviceFee,
+                        admissionFee,
+                        securityFee,
+                        serviceAdminAmt,
+                      });
+                      await transporter.sendMail({
+                        from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+                        to: adminUser.email,
+                        subject: `Service fee received — ${process.env.APP_NAME || 'Intellistay'}`,
+                        html: adminHtml,
+                      });
+                    }
+                  }
+                } catch (e) {
+                  console.error('Failed to credit admin in webhook:', e && e.message ? e.message : e);
+                }
+              }
+
+              // Credit owner and send a single combined email
+              if (admissionFee > 0 && admissionOwnerAmt > 0) {
+                try {
+                  const ownerHostelId = metadata?.hostelId;
+                  if (ownerHostelId) {
+                    const ownerHostel = await Hostel.findById(ownerHostelId).lean();
+                    if (ownerHostel?.ownerId) {
+                      const ownerUser = await User.findById(ownerHostel.ownerId).select('email name balance').exec();
+                      if (ownerUser) {
+                        ownerUser.balance = (ownerUser.balance || 0) + admissionOwnerAmt;
+                        await ownerUser.save();
+
+                        // send unified owner email with booking and fee breakdown
+                        if (ownerUser.email) {
+                          const ownerHtml = getOwnerBookingEmail({
+                            ownerUser,
+                            ownerHostel,
+                            metadata,
+                            roomLabel: metadata.roomLabel || "-",
+                            bedsBooked: parseInt(bedsBooked || 1, 10) || 1,
+                            serviceFee,
+                            admissionFee,
+                            securityFee,
+                            admissionOwnerAmt,
+                          });
+                          await transporter.sendMail({
+                            from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+                            to: ownerUser.email,
+                            subject: `Booking received & fees credited — ${process.env.APP_NAME || 'Intellistay'}`,
+                            html: ownerHtml,
+                          });
+                        }
+                      }
+                    }
+                  }
+                } catch (e) {
+                  console.error('Failed to credit owner or send owner email in webhook:', e && e.message ? e.message : e);
+                }
+              }
+            } catch (e) {
+              console.error('Webhook fee processing error:', e && e.message ? e.message : e);
+            }
           }
         } catch (bookingErr) {
           console.error(
@@ -230,23 +339,21 @@ export const handleStripeWebhook = async (req, res) => {
             "Preparing to send simplified customer email to",
             customerEmail,
           );
-          const customerHtml = `
-            <h2>Booking Confirmed ✓</h2>
-            <p>Thank you for your payment! Your booking has been successfully confirmed.</p>
-            <h3>Booking Details</h3>
-            <p><strong>Hostel:</strong> ${hostelName}</p>
-            <p><strong>Room Number:</strong> ${roomLabel}</p>
-            <p><strong>Room Type:</strong> ${metadata.roomType || "-"}</p>
-            <p><strong>Number of Beds:</strong> ${beds}</p>
-            <p><strong>Price per Bed:</strong> ${metadata.pricePerBed || "-"} ${currency.toUpperCase()}</p>
-            <p><strong>Check-in Date:</strong> ${metadata.startDate || "-"}</p>
-            <p style="font-weight: bold; margin-top: 15px;"><strong>Total Amount Paid:</strong> ${amount ? (amount / 100).toFixed(2) + " " + currency.toUpperCase() : "-"}</p>
-            <h4 style="margin-top:18px;">Hostel owner contact</h4>
-            <p><strong>Name:</strong> ${ownerName}</p>
-            <p><strong>Email:</strong> ${ownerEmail}</p>
-            <p><strong>Phone:</strong> ${ownerPhone}</p>
-            <p style="margin-top: 10px; color: #666;">If you have any other questions about your booking, please contact us at ${process.env.ADMIN_EMAIL || "support"}.</p>
-          `;
+          const customerHtml = getStudentBookingEmail({
+            hostelName,
+            roomLabel,
+            metadata,
+            beds,
+            currency,
+            admissionFee: Number(metadata?.admissionFee || 0),
+            securityFee: Number(metadata?.securityFee || 0),
+            serviceFee: Number(metadata?.serviceFee || 0),
+            amount,
+            ownerName,
+            ownerEmail,
+            ownerPhone,
+            supportEmail: process.env.ADMIN_EMAIL || "support",
+          });
           await transporter.sendMail({
             from: process.env.FROM_EMAIL || process.env.SMTP_USER,
             to: customerEmail,
@@ -289,30 +396,34 @@ export const handleStripeWebhook = async (req, res) => {
             // ignore normalization errors
           }
 
-          await transporter.sendMail({
-            from: process.env.FROM_EMAIL || process.env.SMTP_USER,
-            to: process.env.ADMIN_EMAIL,
-            subject: `New booking received — ${process.env.APP_NAME || "App"}`,
-            html: `
-              <p>New booking completed via Stripe.</p>
-              ${roomDetailsHtml}
-              <h3>Session summary</h3>
-              <p><strong>Session ID:</strong> ${session.id}</p>
-              <p><strong>Payment status:</strong> ${sanitizedSession.payment_status || sanitizedSession.status || "-"}</p>
-              <p><strong>Amount:</strong> ${sanitizedSession.amount_total ? (sanitizedSession.amount_total / 100).toFixed(2) + " " + (sanitizedSession.currency || "pkr").toUpperCase() : "-"}</p>
-              <p><strong>Customer name:</strong> ${sanitizedSession.customer_details?.name || "-"}</p>
-              <p><strong>Customer email:</strong> ${sanitizedSession.customer_details?.email || sanitizedSession.customer_email || "-"}</p>
-              <h4>Metadata</h4>
-              <ul>
-                <li><strong>Room:</strong> ${sanitizedSession.metadata?.roomId || "-"}</li>
-                <li><strong>Hostel:</strong> ${sanitizedSession.metadata?.hostelId || "-"}</li>
-                <li><strong>Start date:</strong> ${sanitizedSession.metadata?.startDate || "-"}</li>
-                <li><strong>Beds booked:</strong> ${sanitizedSession.metadata?.bedsBooked || "-"}</li>
-                <li><strong>Price per bed:</strong> ${sanitizedSession.metadata?.pricePerBed || "-"}</li>
-              </ul>
-            `,
-          });
-          console.log("Admin email sent to", process.env.ADMIN_EMAIL);
+          // Simplified admin email: booking details + service/admission fee breakdown
+          try {
+            const serviceFee = metadata?.serviceFee ? Number(metadata.serviceFee) : 0;
+            const admissionFee = metadata?.admissionFee ? Number(metadata.admissionFee) : 0;
+            const serviceAdminAmt = metadata?.serviceAdmin ? Number(metadata.serviceAdmin) : 0;
+            const securityFee = metadata?.securityFee ? Number(metadata.securityFee) : 0;
+
+            const adminHtml = getAdminBookingEmail({
+              hostelName: hostelName || '-',
+              metadata,
+              roomLabel: roomLabel || '-',
+              beds,
+              serviceFee,
+              admissionFee,
+              securityFee,
+              serviceAdminAmt,
+            });
+
+            await transporter.sendMail({
+              from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+              to: process.env.ADMIN_EMAIL,
+              subject: `Booking received & service fee credited — ${process.env.APP_NAME || "App"}`,
+              html: adminHtml,
+            });
+            console.log("Admin email sent to", process.env.ADMIN_EMAIL);
+          } catch (e) {
+            console.error('Failed to send simplified admin email:', e && e.message ? e.message : e);
+          }
         }
         // Attempt to transfer funds to owner if this booking belongs to a hostel with an owner
         try {

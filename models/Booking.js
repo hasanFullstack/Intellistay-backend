@@ -39,6 +39,39 @@ const bookingSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    // Optional one-time admission fee paid by student (in currency units, e.g., PKR)
+    admissionFee: {
+      type: Number,
+      default: 0,
+    },
+    // How the admission fee was split: admin and owner amounts (currency units)
+    admissionSplit: {
+      admin: { type: Number, default: 0 },
+      owner: { type: Number, default: 0 },
+    },
+    // Optional service fee collected for platform (e.g., convenience/service charge)
+    serviceFee: {
+      type: Number,
+      default: 0,
+    },
+    // How the service fee was split (usually to platform/admin)
+    serviceSplit: {
+      admin: { type: Number, default: 0 },
+    },
+    // Optional refundable security fee (usually equals per-bed fee x booked beds)
+    securityFee: {
+      type: Number,
+      default: 0,
+    },
+    securityFeeStatus: {
+      type: String,
+      enum: ["not_applicable", "held", "refunded"],
+      default: "not_applicable",
+    },
+    securityFeeRefundedAt: {
+      type: Date,
+      default: null,
+    },
     status: {
       type: String,
       enum: ["pending", "confirmed", "cancelled", "completed"],

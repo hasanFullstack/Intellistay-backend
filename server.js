@@ -39,6 +39,7 @@ const resolvedEnvPath = process.env.ENV_FILE_PATH
   : path.resolve(__dirname, ".env");
 
 dns.setServers(["8.8.8.8", "8.8.4.4"]);
+
 dotenv.config({ path: resolvedEnvPath });
 
 if (process.env.NODE_ENV !== "production") {

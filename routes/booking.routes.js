@@ -8,6 +8,7 @@ import {
   getOwnerBookings,
   acceptBooking,
   rejectBooking,
+  updateSecurityFeeStatus,
 } from "../controllers/booking.controller.js";
 import { protect, allowRoles } from "../middleware/role.middleware.js";
 
@@ -24,5 +25,6 @@ router.put("/:id/complete", protect, allowRoles("student"), completeBooking);
 router.get("/owner/all", protect, allowRoles("owner"), getOwnerBookings);
 router.put("/:id/accept", protect, allowRoles("owner"), acceptBooking);
 router.put("/:id/reject", protect, allowRoles("owner"), rejectBooking);
+router.put("/:id/security-fee", protect, allowRoles("owner"), updateSecurityFeeStatus);
 
 export default router;
