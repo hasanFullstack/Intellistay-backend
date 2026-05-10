@@ -19,6 +19,42 @@ function isConnectNotEnabledError(err) {
   );
 }
 
+function isValidWebUrl(value, maxLen = 2048) {
+  if (!value || typeof value !== "string" || value.length > maxLen) return false;
+
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function buildFrontendBaseUrl(req) {
+  const requestOrigin = req?.headers?.origin;
+  const requestReferer = req?.headers?.referer;
+  const configuredClientUrl = process.env.CLIENT_URL;
+  const vercelUrl = process.env.VERCEL_URL
+    ? `https://${String(process.env.VERCEL_URL).replace(/^https?:\/\//i, "")}`
+    : "";
+
+  if (isValidWebUrl(requestOrigin)) return requestOrigin.replace(/\/+$/, "");
+
+  if (isValidWebUrl(requestReferer)) {
+    try {
+      const parsed = new URL(requestReferer);
+      return `${parsed.protocol}//${parsed.host}`;
+    } catch {
+      // Ignore malformed referer and continue to configured fallbacks.
+    }
+  }
+
+  if (isValidWebUrl(configuredClientUrl)) return configuredClientUrl.replace(/\/+$/, "");
+  if (isValidWebUrl(vercelUrl)) return vercelUrl.replace(/\/+$/, "");
+
+  return "http://localhost:5173";
+}
+
 // Creates (or reuses) a Stripe Express account for the owner and returns a
 // hosted onboarding URL. Owner API keys are never required.
 export const startConnectOnboarding = async (req, res, next) => {
@@ -65,13 +101,13 @@ export const startConnectOnboarding = async (req, res, next) => {
       });
     }
 
-    const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
-    const settingsReturnBase = `${clientUrl}/dashboard/owner?tab=settings`;
+    const clientUrl = buildFrontendBaseUrl(req);
+    const ownerDashboardUrl = `${clientUrl}/dashboard/owner`;
 
     const accountLink = await stripe.accountLinks.create({
       account: accountId,
-      refresh_url: `${settingsReturnBase}&stripe=refresh`,
-      return_url: `${settingsReturnBase}&stripe=connected`,
+      refresh_url: `${ownerDashboardUrl}?stripe=refresh`,
+      return_url: `${ownerDashboardUrl}?stripe=connected`,
       type: "account_onboarding",
     });
 
