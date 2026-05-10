@@ -7,7 +7,7 @@ export const securityHeaders = helmet();
 // Rate limiter for auth routes — prevent brute-force
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // max 20 attempts per window
+  max: 90, // max 90 attempts per window
   message: {
     message: "Too many attempts. Please try again after 15 minutes.",
   },
